@@ -1006,6 +1006,21 @@ bool RsGxsDataAccess::getMsgData(MsgDataReq* req)
 
 	const RsTokReqOptions& opts(req->Options);
 
+	// When no filtering at all is requested, resolving the message ids is pure
+	// overhead: it walks every meta of the group only to hand back the set the
+	// request already implies. Worse, it turns a request meaning "all messages
+	// of this group" (empty id set) into an explicit id list, which forces the
+	// data store to issue one SQL query per message instead of a single one.
+	// Opening a channel with a few thousand posts is exactly that case.
+	if( !opts.mStatusMask && !opts.mMsgFlagMask &&
+	    !( opts.mOptions & ( RS_TOKREQOPT_MSG_LATEST  |
+	                         RS_TOKREQOPT_MSG_ORIGMSG |
+	                         RS_TOKREQOPT_MSG_THREAD ) ) )
+	{
+		mDataStore->retrieveNxsMsgs(req->mMsgIds, req->mMsgData, true);
+		return true;
+	}
+
 	// filter based on options
 	getMsgIdList(req->mMsgIds, opts, msgIdOut);
 
@@ -1195,6 +1210,14 @@ bool RsGxsDataAccess::getMsgMetaDataList( const GxsMsgReq& msgIds, const RsTokRe
 						metaV[i] = nullptr;
 						continue;
 					}
+
+					// Apply mStatusMask/mStatusFilter if specified (fixes bug where all msgs were returned
+					// even when filtering for UNPROCESSED status in request_GroupUnprocessedPosts)
+					if (!checkMsgFilter(opts, msgMeta))
+					{
+						metaV[i] = nullptr;
+						continue;
+					}
 				}
     }
 
@@ -1229,6 +1252,9 @@ bool RsGxsDataAccess::getMsgIdList( const GxsMsgReq& msgIds, const RsTokReqOptio
 
     for(auto it(result.begin());it!=result.end();++it)
     {
+        if (it->second.empty())
+            continue;
+
         auto& id_set(msgIdsOut[it->first]);
 
         for(uint32_t i=0;i<it->second.size();++i)
@@ -1890,15 +1916,6 @@ bool RsGxsDataAccess::checkMsgFilter(const RsTokReqOptions& opts, const std::sha
 		}
 		else
 		{
-#ifdef DATA_DEBUG
-            GXSDATADEBUG << __PRETTY_FUNCTION__
-			          << " Dropping Msg due to !StatusMatch "
-			          << " Mask: " << opts.mStatusMask
-			          << " StatusFilter: " << opts.mStatusFilter
-			          << " MsgStatus: " << meta->mMsgStatus
-			          << " MsgId: " << meta->mMsgId << std::endl;
-#endif
-
 			return false;
 		}
 	}

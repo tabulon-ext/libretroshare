@@ -5,7 +5,6 @@
  *                                                                             *
  * Copyright (C) 2012-2018  Retroshare Team <contact@retroshare.cc>            *
  * Copyright (C) 2018-2022  Gioacchino Mazzurco <gio@retroshare.cc>            *
- * Copyright (C) 2020-2022  Asociación Civil Altermundi <info@altermundi.net>  *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -80,6 +79,15 @@ constexpr auto RS_HUMAN_READABLE_VERSION =
         RS_PRIVATE_STRINGIFY(RS_MAJOR_VERSION) "." \
         RS_PRIVATE_STRINGIFY(RS_MINOR_VERSION) "." \
         RS_PRIVATE_STRINGIFY(RS_MINI_VERSION) RS_EXTRA_VERSION;
+
+/**
+ * Version string that we share with peers. This should be less precise than the
+ * human-readable version to mitigate node correlation with the version string.
+ */
+constexpr auto RS_SHARED_VERSION =
+        RS_PRIVATE_STRINGIFY(RS_MAJOR_VERSION) "." \
+        RS_PRIVATE_STRINGIFY(RS_MINOR_VERSION) "." \
+        RS_PRIVATE_STRINGIFY(RS_MINI_VERSION);
 
 /* Because RetroShare-gui include this file in gui/images/retroshare_win.rc
  * including any C++ things like `#include <string>` will break compilation of

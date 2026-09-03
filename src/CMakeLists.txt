@@ -1,7 +1,6 @@
 # RetroShare decentralized communication platform
 #
-# Copyright (C) 2021  Gioacchino Mazzurco <gio@eigenlab.org>
-# Copyright (C) 2021  Asociación Civil Altermundi <info@altermundi.net>
+# Copyright (C) 2021  Gioacchino Mazzurco <gio@retroshare.cc>
 #
 # SPDX-License-Identifier: CC0-1.0
 
@@ -21,7 +20,6 @@ list(
 	retroshare/rsgxstrans.h
 	retroshare/rsgxstunnel.h
 	retroshare/rsids.h
-	retroshare/rsnotify.h
 	retroshare/rsphoto.h
 	retroshare/rsplugin.h
 	retroshare/rsreputations.h
@@ -36,7 +34,8 @@ list(
 	retroshare/rsgxsifacehelper.h
 	retroshare/rshistory.h
 	retroshare/rsidentity.h
-	retroshare/rsmsgs.h
+	retroshare/rschats.h
+	retroshare/rsmail.h
 	retroshare/rsgxschannels.h
 	retroshare/rsgxscircles.h
 	retroshare/rsgxsiface.h
@@ -46,7 +45,8 @@ list(
 	retroshare/rsevents.h
 	retroshare/rsfiles.h
 	retroshare/rsinit.h
-	retroshare/rspeers.h )
+	retroshare/rspeers.h
+	retroshare/rstor.h )
 
 list(
 	APPEND RS_SOURCES
@@ -230,27 +230,33 @@ endif(RS_JSON_API)
 
 list(
 	APPEND RS_SOURCES
-	pgp/openpgpsdkhandler.cc
 	pgp/pgpauxutils.cc
 	pgp/pgphandler.cc
 	pgp/pgpkeyutil.cc
-	pgp/rscertificate.cc
-	pgp/rnppgphandler.cc )
+	pgp/rscertificate.cc )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
-	pgp/openpgpsdkhandler.h
 	pgp/pgpauxutils.h
 	pgp/pgphandler.h
 	pgp/pgpkeyutil.h
-	pgp/rscertificate.h
-	pgp/rnppgphandler.h )
+	pgp/rscertificate.h )
 
-#./plugins/dlfcn_win32.cc
-#./plugins/dlfcn_win32.h
-#./plugins/pluginmanager.h
+if(RS_RNPLIB)
+	list(APPEND RS_SOURCES pgp/rnppgphandler.cc)
+	list(APPEND RS_IMPLEMENTATION_HEADERS pgp/rnppgphandler.h)
+else()
+	list(APPEND RS_SOURCES pgp/openpgpsdkhandler.cc)
+	list(APPEND RS_IMPLEMENTATION_HEADERS pgp/openpgpsdkhandler.h)
+endif()
+
 #./plugins/rscacheservice.h
 #./plugins/rspqiservice.h
+
+if(WIN32)
+	list(APPEND RS_SOURCES plugins/dlfcn_win32.cc)
+	list(APPEND RS_IMPLEMENTATION_HEADERS plugins/dlfcn_win32.h)
+endif()
 
 list(
 	APPEND RS_SOURCES
@@ -273,7 +279,6 @@ list(
 	pqi/pqistore.cc
 	pqi/authgpg.cc
 	pqi/p3cfgmgr.cc
-	pqi/p3notify.cc
 	pqi/p3servicecontrol.cc
 	pqi/pqifdbin.cc
 	pqi/pqinetstatebox.cc
@@ -302,7 +307,6 @@ list(
 	pqi/p3historymgr.h
 	pqi/p3linkmgr.h
 	pqi/p3netmgr.h
-	pqi/p3notify.h
 	pqi/p3peermgr.h
 	pqi/p3servicecontrol.h
 	pqi/p3upnpmgr.h
@@ -336,10 +340,14 @@ list(
 	pqi/pqistreamer.h
 	pqi/pqithreadstreamer.h
 	pqi/sslfns.h )
-
-#./pqi/pqissli2psam3.cpp
-#./pqi/pqissli2psam3.h
-
+if(RS_USE_I2P_SAM3)
+	list(APPEND RS_SOURCES
+		pqi/pqissli2psam3.cpp
+	)
+	list(APPEND RS_IMPLEMENTATION_HEADERS
+		pqi/pqissli2psam3.h
+	)
+endif()
 list(
 	APPEND RS_SOURCES
 	rsitems/rsbanlistitems.cc
@@ -356,11 +364,6 @@ list(
 	rsitems/rsrttitems.cc
 	rsitems/rsserviceinfoitems.cc )
 
-#retroshare/rswiki.h
-#./rsitems/rswikiitems.cc
-#./rsitems/rswikiitems.h
-#./rsitems/rswireitems.h
-
 list(
 	APPEND RS_SOURCES
 	rsitems/rsgxschannelitems.cc
@@ -371,8 +374,6 @@ list(
 #./rsitems/rsphotoitems.cc
 #./rsitems/rsphotoitems.h
 #./rsitems/rsposteditems.h
-#./rsitems/rswireitems.cc
-#retroshare/rswire.h
 
 list(
 	APPEND RS_SOURCES
@@ -415,7 +416,6 @@ list(
 	rsserver/p3serverconfig.cc
 	rsserver/rsloginhandler.cc
 	rsserver/p3face-server.cc
-	rsserver/p3msgs.cc
 	rsserver/p3peers.cc
 	rsserver/rsaccounts.cc
 	rsserver/rsinit.cc )
@@ -424,7 +424,6 @@ list(
 	APPEND RS_IMPLEMENTATION_HEADERS
 	rsserver/p3face.h
 	rsserver/p3history.h
-	rsserver/p3msgs.h
 	rsserver/p3peers.h
 	rsserver/p3serverconfig.h
 	rsserver/p3status.h
@@ -475,11 +474,15 @@ list(
 	serialiser/rstlvmaps.h
 	serialiser/rstlvstring.h
 	serialiser/rstypeserializer.h )
-
 # ./services/autoproxy
-#./services/autoproxy/p3i2psam3.cpp
-#./services/autoproxy/p3i2psam3.h
-
+if(RS_USE_I2P_SAM3)
+	list(APPEND RS_SOURCES
+		services/autoproxy/p3i2psam3.cpp
+	)
+	list(APPEND RS_IMPLEMENTATION_HEADERS
+		services/autoproxy/p3i2psam3.h
+	)
+endif()
 list(
 	APPEND RS_SOURCES
 	services/autoproxy/rsautoproxymonitor.cc
@@ -518,11 +521,60 @@ list(
 	services/p3serviceinfo.h
 	services/p3statusservice.h
 	services/rseventsservice.h )
+
+if(RS_USE_CALENDAR)
+	list(
+		APPEND RS_PUBLIC_HEADERS
+		retroshare/rsgxscalendar.h )
+
+	list(
+		APPEND RS_SOURCES
+		rsitems/rsgxscalendaritems.cc
+		services/p3gxscalendar.cc )
+
+	list(
+		APPEND RS_IMPLEMENTATION_HEADERS
+		rsitems/rsgxscalendaritems.h
+		services/p3gxscalendar.h )
+endif(RS_USE_CALENDAR)
 	
-#./services/p3wiki.cc
-#./services/p3wiki.h
-#./services/p3wire.cc
-#./services/p3wire.h
+# The Wiki (WikiPoos) and The Wire are experimental, off-by-default GXS
+# services. Their sources are compiled only when the matching option is set.
+# The options live in the top-level CMakeLists.txt (RS_GXSWIKIPOS /
+# RS_GXSTHEWIRE), which also adds the RS_USE_WIKI / RS_USE_WIRE compile
+# definitions that gate the service instantiation in rsserver/rsinit.cc and
+# the corresponding GUI code.
+if(RS_GXSWIKIPOS)
+	list(
+		APPEND RS_SOURCES
+		services/p3wiki.cc
+		rsitems/rswikiitems.cc )
+
+	list(
+		APPEND RS_IMPLEMENTATION_HEADERS
+		services/p3wiki.h
+		rsitems/rswikiitems.h )
+
+	list(
+		APPEND RS_PUBLIC_HEADERS
+		retroshare/rswiki.h )
+endif(RS_GXSWIKIPOS)
+
+if(RS_GXSTHEWIRE)
+	list(
+		APPEND RS_SOURCES
+		services/p3wire.cc
+		rsitems/rswireitems.cc )
+
+	list(
+		APPEND RS_IMPLEMENTATION_HEADERS
+		services/p3wire.h
+		rsitems/rswireitems.h )
+
+	list(
+		APPEND RS_PUBLIC_HEADERS
+		retroshare/rswire.h )
+endif(RS_GXSTHEWIRE)
 
 #./services/p3photoservice.cc
 #./services/p3photoservice.h
@@ -617,13 +669,12 @@ list(
 	util/rsnet.cc
 	util/rsnet_ss.cc
 	util/rsstacktrace.cc
-	util/rsthreads.cc )
-
-# util/i2pcommon.cpp
-# util/i2pcommon.h
+	util/rsthreads.cc
+	util/i2pcommon.cpp )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
+	util/i2pcommon.h
 	util/argstream.h
 	util/contentvalue.h
 	util/cxx11retrocompat.h
@@ -653,7 +704,6 @@ list(
 	util/rsfile.h
 	util/rsinitedptr.h
 	util/rsjson.h
-	util/rskbdinput.cc
 	util/rskbdinput.h
 	util/rslikelyunlikely.h
 	util/rsmacrosugar.hpp
@@ -665,7 +715,6 @@ list(
 	util/rsrecogn.h
 	util/rsstd.h
 	util/rsstring.h
-	util/rsthreads.cc
 	util/rsthreads.h
 	util/rstickevent.h
 	util/rstime.h

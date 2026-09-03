@@ -1,8 +1,7 @@
 /*
  * RetroShare JSON API
  *
- * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@eigenlab.org>
- * Copyright (C) 2019-2020  Asociación Civil Altermundi <info@altermundi.net>
+ * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@retroshare.cc>
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Affero General Public License as published by the
@@ -276,6 +275,65 @@ JsonApiServer::JsonApiServer(): configMutex("JsonApiServer config"),
 				RsGenericSerializer::SerializeJob j(RsGenericSerializer::TO_JSON);
 				RS_SERIAL_PROCESS(locationId);
 				RS_SERIAL_PROCESS(pgpId);
+				RS_SERIAL_PROCESS(retval);
+			}
+
+			// return them to the API caller
+			DEFAULT_API_CALL_JSON_RETURN(rb::OK);
+		} );
+	}, false);
+
+	registerHandler("/rsLoginHelper/attemptLogin",
+	                [this](const std::shared_ptr<rb::Session> session)
+	{
+		auto reqSize = session->get_request()->get_header("Content-Length", 0);
+		session->fetch( static_cast<size_t>(reqSize), [this](
+		                const std::shared_ptr<rb::Session> session,
+		                const rb::Bytes& body )
+		{
+			INITIALIZE_API_CALL_JSON_CONTEXT;
+
+			RsPeerId account;
+			std::string password;
+
+			// JSON API only
+			std::string apiUser;
+			std::string apiPass;
+
+			// deserialize input parameters from JSON
+			{
+				RsGenericSerializer::SerializeContext& ctx(cReq);
+				RsGenericSerializer::SerializeJob j(RsGenericSerializer::FROM_JSON);
+				RS_SERIAL_PROCESS(account);
+				RS_SERIAL_PROCESS(password);
+
+				// JSON API only
+				RS_SERIAL_PROCESS(apiUser);
+				RS_SERIAL_PROCESS(apiPass);
+			}
+
+			RsInit::LoadCertificateStatus retval;
+
+			if(!apiUser.empty() && badApiCredientalsFormat(apiUser, apiPass))
+			{
+				retval = RsInit::LoadCertificateStatus::ERR_UNKNOWN;
+			}
+			else
+			{
+				// Call retroshare C++ API
+				retval = rsLoginHelper->attemptLogin(account, password);
+
+				// If login succeeded and custom API credentials were provided, authorize them!
+				if(retval == RsInit::OK && !apiUser.empty())
+				{
+					authorizeUser(apiUser, apiPass);
+				}
+			}
+
+			// serialize out parameters and return value to JSON
+			{
+				RsGenericSerializer::SerializeContext& ctx(cAns);
+				RsGenericSerializer::SerializeJob j(RsGenericSerializer::TO_JSON);
 				RS_SERIAL_PROCESS(retval);
 			}
 
@@ -733,19 +791,33 @@ bool JsonApiServer::saveList(bool& cleanup, std::list<RsItem*>& saveItems)
 
 bool JsonApiServer::loadList(std::list<RsItem*>& loadList)
 {
+	/* This may run while the server is already listening and serving requests,
+	 * because in retroshare-service and Android the config manager only exists
+	 * after login, so protect the members shared with the request handlers. */
+	RS_STACK_MUTEX(configMutex);
+
 	for(RsItem* it : loadList)
     {
         JsonApiServerAuthTokenStorage *au=dynamic_cast<JsonApiServerAuthTokenStorage*>(it);
 
         if(au)
-            mAuthTokenStorage = *au;
+        {
+			/* Merge instead of replacing: tokens authorized before the config
+			 * gets loaded, like the web interface one supplied on the command
+			 * line, must not be wiped out. On conflict the already authorized
+			 * one wins, as it is the most recently supplied. */
+			for(auto& tk: au->mAuthorizedTokens)
+				mAuthTokenStorage.mAuthorizedTokens.insert(tk);
+        }
 
         JsonApiServerConfigItem *ac=dynamic_cast<JsonApiServerConfigItem*>(it);
 
         if(ac)
         {
-            mListeningPort = ac->mListeningPort;
-            mBindingAddress = ac->mBindingAddress;
+			/* Do not override what has been explicitly supplied on the command
+			 * line or through the API @see mListeningPortExplicit */
+			if(!mListeningPortExplicit) mListeningPort = ac->mListeningPort;
+			if(!mBindingAddressExplicit) mBindingAddress = ac->mBindingAddress;
         }
 
         delete it;
@@ -841,10 +913,14 @@ uint16_t JsonApiServer::listeningPort() const { return mListeningPort; }
 void JsonApiServer::setListeningPort(uint16_t p)
 {
     mListeningPort = p;
+    mListeningPortExplicit = true;
     IndicateConfigChanged();
 }
 void JsonApiServer::setBindingAddress(const std::string& bindAddress)
-{ mBindingAddress = bindAddress; }
+{
+	mBindingAddress = bindAddress;
+	mBindingAddressExplicit = true;
+}
 std::string JsonApiServer::getBindingAddress() const { return mBindingAddress; }
 
 void JsonApiServer::run()

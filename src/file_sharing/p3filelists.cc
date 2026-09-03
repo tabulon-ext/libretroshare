@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2018  Mr.Alice <mralice@users.sourceforge.net>                *
- * Copyright (C) 2021  Gioacchino Mazzurco <gio@eigenlab.org>                  *
- * Copyright (C) 2021  Asociación Civil Altermundi <info@altermundi.net>       *
+ * Copyright (C) 2021  Gioacchino Mazzurco <gio@retroshare.cc>                  *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -80,6 +79,8 @@ p3FileDatabase::p3FileDatabase(p3ServiceControl *mpeers)
     mLastDataRecvTS = 0 ;
     mTrustFriendNodesForBannedFiles = TRUST_FRIEND_NODES_FOR_BANNED_FILES_DEFAULT;
 	mLastPrimaryBanListChangeTimeStamp = 0;
+    mUploadStatsRetentionDays = 0;
+    mCumulativeUploadedAll = 0;
 
     // This is for the transmission of data
 
@@ -142,7 +143,6 @@ void p3FileDatabase::updateShareFlags(const SharedDirInfo& info)
         mLocalSharedDirs->updateShareFlags(info) ;
     }
 
-    RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_LOCAL, 0);
     IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 
     if(rsEvents)
@@ -198,6 +198,7 @@ int p3FileDatabase::tick()
     if(mLastCleanupTime + 5 < now)
     {
         cleanup();
+        cleanupUploadStats(mUploadStatsRetentionDays);
         mLastCleanupTime = now ;
     }
 
@@ -214,8 +215,12 @@ int p3FileDatabase::tick()
 			last_print_time = now ;
 		}
 
-#warning mr-alice 2016-08-19: "This should be removed, but it's necessary atm for updating the GUI"
-        RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_LOCAL, 0);
+        if(rsEvents)
+        {
+            auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+            ev->mEventCode = RsSharedDirectoriesEventCode::OWN_DIR_LIST_UPDATED;
+            rsEvents->postEvent(ev);
+        }
 
         checkSendBannedFilesInfo();
     }
@@ -225,11 +230,23 @@ int p3FileDatabase::tick()
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 
         if(mUpdateFlags & P3FILELISTS_UPDATE_FLAG_LOCAL_DIRS_CHANGED)
-            RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_LOCAL, 0);
-
+        {
+            if(rsEvents)
+            {
+                auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+                ev->mEventCode = RsSharedDirectoriesEventCode::OWN_DIR_LIST_UPDATED;
+                rsEvents->postEvent(ev);
+            }
+        }
         if(mUpdateFlags & P3FILELISTS_UPDATE_FLAG_REMOTE_DIRS_CHANGED)
-            RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_FRIENDS, 0);
-
+        {
+            if(rsEvents)
+            {
+                auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+                ev->mEventCode = RsSharedDirectoriesEventCode::FRIEND_DIR_LIST_UPDATED;
+                rsEvents->postEvent(ev);
+            }
+        }
         mUpdateFlags = P3FILELISTS_UPDATE_FLAG_NOTHING_CHANGED ;
     }
 
@@ -265,7 +282,14 @@ int p3FileDatabase::tick()
         // avoid syncing the GUI at every dir sync which kills performance.
 
 		if(mLastDataRecvTS + 5 < now && mLastDataRecvTS + 20 > now)
-			RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_FRIENDS, 0);						 	 	 // notify the GUI if the hierarchy has changed
+        {
+            if(rsEvents)
+            {
+                auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+                ev->mEventCode = RsSharedDirectoriesEventCode::FRIEND_DIR_LIST_UPDATED;
+                rsEvents->postEvent(ev);
+            }
+        }
     }
 
     return 0;
@@ -346,6 +370,27 @@ cleanup = true;
             item->primary_banned_files_list.insert(*it);
 
             if(item->primary_banned_files_list.size() > 1000)	// safe bet for size
+            {
+                sList.push_back(item) ;
+                item = nullptr;
+            }
+        }
+        if(item != nullptr)
+            sList.push_back(item) ;
+    }
+
+    {
+        RS_STACK_MUTEX(mFLSMtx) ;
+        RsFileListsUploadStatsItemV2 *item = nullptr;
+
+        for(auto it(mCumulativeUploaded.begin());it!=mCumulativeUploaded.end();++it)
+        {
+            if(item == nullptr)
+                item = new RsFileListsUploadStatsItemV2 ;
+
+            item->hash_stats.insert(*it);
+
+            if(item->hash_stats.size() > 500)	// safe bet for size
             {
                 sList.push_back(item) ;
                 item = nullptr;
@@ -454,6 +499,15 @@ cleanup = true;
 
         kv.key = IGNORE_LIST_FLAGS_SS; kv.value = s; rskv->tlvkvs.pairs.push_back(kv);
 	}
+    {
+        std::string s;
+        rs_sprintf(s, "%d", mUploadStatsRetentionDays);
+
+        RsTlvKeyValue kv;
+        kv.key = UPLOAD_STATS_RETENTION_DAYS_SS;
+        kv.value = s;
+        rskv->tlvkvs.pairs.push_back(kv);
+    }
 
     /* Add KeyValue to saveList */
     sList.push_back(rskv);
@@ -486,6 +540,8 @@ bool p3FileDatabase::loadList(std::list<RsItem *>& load)
 	ignored_suffixes.push_back( ".part" );
 #endif
     mPrimaryBanList.clear();
+        mCumulativeUploaded.clear();
+        mCumulativeUploadedAll = 0;
 
     for(std::list<RsItem *>::iterator it = load.begin(); it != load.end(); ++it)
     {
@@ -574,6 +630,12 @@ bool p3FileDatabase::loadList(std::list<RsItem *>& load)
                 if(sscanf(kit->value.c_str(),"%d",&t) == 1)
                     max_share_depth = (uint32_t)t ;
 			}
+            else if(kit->key == UPLOAD_STATS_RETENTION_DAYS_SS)
+            {
+                int t=0;
+                if(sscanf(kit->value.c_str(),"%d",&t) == 1)
+                    mUploadStatsRetentionDays = t;
+            }
 
             delete *it ;
             continue ;
@@ -604,6 +666,34 @@ bool p3FileDatabase::loadList(std::list<RsItem *>& load)
             mPrimaryBanList.insert(fb->primary_banned_files_list.begin(),fb->primary_banned_files_list.end()) ;
             mBannedFileListNeedsUpdate = true;
             mLastPrimaryBanListChangeTimeStamp = time(NULL);
+        }
+
+        RsFileListsUploadStatsItem *fu = dynamic_cast<RsFileListsUploadStatsItem*>(*it) ;
+
+        if(fu)
+        {
+            // Migration V1 (deprecated Feb 2026) -> V2: Set timestamp to now
+            rstime_t now = time(NULL);
+            RsDbg() << "UPLOADSTATS Migrating V1 stats (count: " << fu->hash_stats.size() << ") to V2";
+            for(auto const& [hash, bytes] : fu->hash_stats)
+            {
+                TimeBasedUploadStat& stat = mCumulativeUploaded[hash];
+                stat.total_bytes = bytes;
+                stat.last_upload_ts = now;
+                mCumulativeUploadedAll += bytes;
+            }
+        }
+
+        RsFileListsUploadStatsItemV2 *fu2 = dynamic_cast<RsFileListsUploadStatsItemV2*>(*it) ;
+
+        if(fu2)
+        {
+            RsDbg() << "UPLOADSTATS Loading V2 stats (count: " << fu2->hash_stats.size() << ")";
+            for(auto const& it_item : fu2->hash_stats)
+            {
+                mCumulativeUploaded[it_item.first] = it_item.second ;
+                mCumulativeUploadedAll += it_item.second.total_bytes ;
+            }
         }
 
         delete *it ;
@@ -643,8 +733,14 @@ void p3FileDatabase::cleanup()
         for(uint32_t i=0;i<mRemoteDirectories.size();++i)
             if(mRemoteDirectories[i] != NULL)
             {
-                rstime_t recurs_mod_time ;
-                mRemoteDirectories[i]->getDirectoryRecursModTime(0,recurs_mod_time) ;
+                // "Empty" here means "shares no file", using the same signal as the GUI (cumulated file
+                // count at the root). A tree made of directories only (no files) has a non-zero recursive
+                // modification time, so testing that would keep such a peer on the 60-days timer even though
+                // the GUI shows it as "Empty". Counting files instead makes both agree.
+
+                uint32_t file_count = 0 ;
+                mRemoteDirectories[i]->getDirectoryCumulatedFileCount(mRemoteDirectories[i]->root(),file_count) ;
+                bool dir_is_empty = (file_count == 0) ;
 
                 rstime_t last_contact = 0 ;
                 RsPeerDetails pd ;
@@ -654,11 +750,11 @@ void p3FileDatabase::cleanup()
                 // We remove directories in the following situations:
                 //	- the peer is not a friend
                 //  - the dir list is non empty but the peer is offline since more than 60 days
-                //  - the dir list is empty and the peer is ffline since more than 5 days
+                //  - the dir list is empty and the peer is offline since more than 5 days
 
                 bool should_remove =  friend_set.find(mRemoteDirectories[i]->peerId()) == friend_set.end()
-                        			|| (recurs_mod_time == 0 && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
-                        			|| (recurs_mod_time != 0 && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
+                        			|| ( dir_is_empty && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
+                        			|| (!dir_is_empty && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
 
                 if(!should_remove)
                     continue ;
@@ -982,8 +1078,6 @@ bool p3FileDatabase::findChildPointer( void *ref, int row, void *& result,
     return res;
 }
 
-// This function returns statistics about the entire directory
-
 int p3FileDatabase::getSharedDirStatistics(const RsPeerId& pid,SharedDirStats& stats)
 {
     RS_STACK_MUTEX(mFLSMtx) ;
@@ -1002,6 +1096,117 @@ int p3FileDatabase::getSharedDirStatistics(const RsPeerId& pid,SharedDirStats& s
     }
 }
 
+uint64_t p3FileDatabase::getCumulativeUpload(const RsFileHash& hash) const
+{
+	RS_STACK_MUTEX(mFLSMtx);
+	auto it = mCumulativeUploaded.find(hash);
+	if (it != mCumulativeUploaded.end())
+		return it->second.total_bytes;
+	return 0;
+}
+
+uint64_t p3FileDatabase::getCumulativeUploadAll() const
+{
+	RS_STACK_MUTEX(mFLSMtx);
+	return mCumulativeUploadedAll;
+}
+
+uint64_t p3FileDatabase::getCumulativeUploadNum() const
+{
+	RS_STACK_MUTEX(mFLSMtx);
+	return mCumulativeUploaded.size();
+}
+
+void p3FileDatabase::addUploadStats(const RsFileHash& hash, uint64_t size)
+{
+	RS_STACK_MUTEX(mFLSMtx);
+    TimeBasedUploadStat& stat = mCumulativeUploaded[hash];
+    stat.total_bytes += size;
+    stat.last_upload_ts = time(NULL);
+    mCumulativeUploadedAll += size;
+
+    // RsDbg() << "UPLOADSTATS add stats: " << hash << " + " << size << " bytes. Total: " << stat.total_bytes << " ts: " << stat.last_upload_ts;
+	IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
+}
+
+void p3FileDatabase::clearUploadStats()
+{
+	RS_STACK_MUTEX(mFLSMtx);
+    RsDbg() << "UPLOADSTATS clearing all stats";
+	mCumulativeUploaded.clear();
+    mCumulativeUploadedAll = 0;
+}
+
+void p3FileDatabase::cleanupUploadStats(int days)
+{
+    RS_STACK_MUTEX(mFLSMtx);
+    rstime_t now = time(NULL);
+    rstime_t cutoff = now - (rstime_t)days * 24 * 3600;
+    uint32_t removed_count = 0;
+
+    // RsDbg() << "UPLOADSTATS cleanup stats (retention: " << days << " days)";
+    
+    for (auto it = mCumulativeUploaded.begin(); it != mCumulativeUploaded.end(); )
+    {
+        bool expired = (days > 0) && (it->second.last_upload_ts < cutoff);
+        bool still_shared = false;
+        
+        // Optional: check if file is still shared. 
+        // We only do this check if it's not already expired, to save some time.
+        if (!expired)
+        {
+            RsFileHash real_hash;
+            DirectoryStorage::EntryIndex indx;
+            still_shared = mLocalSharedDirs->searchHash(it->first, real_hash, indx);
+        }
+
+        if (expired || !still_shared)
+        {
+            if (expired)
+            {
+                RsDbg() << "UPLOADSTATS removing expired stat: " << it->first << " (ts: " << it->second.last_upload_ts << ")";
+            }
+            else
+            {
+                RsDbg() << "UPLOADSTATS removing stat for unshared file: " << it->first;
+            }
+
+            mCumulativeUploadedAll -= it->second.total_bytes;
+            it = mCumulativeUploaded.erase(it);
+            removed_count++;
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    if (removed_count > 0)
+    {
+        RsDbg() << "UPLOADSTATS cleanup removed " << removed_count << " entries.";
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
+    }
+}
+
+void p3FileDatabase::setUploadStatsRetentionDays(int days)
+{
+    if (mUploadStatsRetentionDays != days)
+    {
+        mUploadStatsRetentionDays = days;
+        RsDbg() << "UPLOADSTATS setting retention days to: " << days;
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
+        
+        // Trigger cleanup immediately if days > 0
+        if (days > 0)
+        {
+            cleanupUploadStats(days);
+        }
+    }
+}
+
+int p3FileDatabase::getUploadStatsRetentionDays() const
+{
+    return mUploadStatsRetentionDays;
+}
 bool p3FileDatabase::removeExtraFile(const RsFileHash& hash)
 {
 	bool ret = false;
@@ -1012,8 +1217,13 @@ bool p3FileDatabase::removeExtraFile(const RsFileHash& hash)
     mLastExtraFilesCacheUpdate = 0 ; // forced cache reload
     }
 
-    RsServer::notify()->notifyListChange(NOTIFY_LIST_DIRLIST_LOCAL, 0);
-	return ret;
+    if(rsEvents)
+    {
+        auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+        ev->mEventCode = RsSharedDirectoriesEventCode::EXTRA_LIST_FILE_REMOVED;
+        rsEvents->postEvent(ev);
+    }
+    return ret;
 }
 
 void p3FileDatabase::getExtraFilesDirDetails_locked(void *ref,DirectoryStorage::EntryIndex e,DirDetails& d) const
@@ -1950,7 +2160,12 @@ void p3FileDatabase::handleDirSyncResponse(RsFileListsSyncResponseItem*& sitem)
 
         if(mLastDataRecvTS + 1 < now) // avoid notifying the GUI too often as it kills performance.
 		{
-			RsServer::notify()->notifyListPreChange(NOTIFY_LIST_DIRLIST_FRIENDS, 0);						 	 	 // notify the GUI if the hierarchy has changed
+            if(rsEvents)
+            {
+                auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+                ev->mEventCode = RsSharedDirectoriesEventCode::FRIEND_DIR_LIST_UPDATED;
+                rsEvents->postEvent(ev);
+            }
 			mLastDataRecvTS = now;
 		}
 #ifdef DEBUG_P3FILELISTS

@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2016  Mr.Alice <mralice@users.sourceforge.net>                *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -100,6 +99,11 @@ DirectoryStorage::DirectoryStorage(const RsPeerId &pid,const std::string& fname)
     load(fname) ;
 }
 
+DirectoryStorage::~DirectoryStorage()
+{
+	delete mFileHierarchy;
+}
+
 DirectoryStorage::EntryIndex DirectoryStorage::root() const
 {
     return EntryIndex(0) ;
@@ -133,6 +137,16 @@ uint32_t DirectoryStorage::getEntryType(const EntryIndex& indx)
 bool DirectoryStorage::getDirectoryUpdateTime   (EntryIndex index,rstime_t& update_TS) const { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->getTS(index,update_TS,&InternalFileHierarchyStorage::DirEntry::dir_update_time     ); }
 bool DirectoryStorage::getDirectoryRecursModTime(EntryIndex index,rstime_t& rec_md_TS) const { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->getTS(index,rec_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_most_recent_time); }
 bool DirectoryStorage::getDirectoryLocalModTime (EntryIndex index,rstime_t& loc_md_TS) const { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->getTS(index,loc_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_modtime         ); }
+
+bool DirectoryStorage::getDirectoryCumulatedFileCount(EntryIndex index,uint32_t& file_count) const
+{
+    RS_STACK_MUTEX(mDirStorageMtx) ;
+    const InternalFileHierarchyStorage::DirEntry *d = mFileHierarchy->getDirEntry(index) ;
+    if(d == nullptr)
+        return false ;
+    file_count = d->dir_cumulated_files ;
+    return true ;
+}
 
 bool DirectoryStorage::setDirectoryUpdateTime   (EntryIndex index,rstime_t  update_TS) { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->setTS(index,update_TS,&InternalFileHierarchyStorage::DirEntry::dir_update_time     ); }
 bool DirectoryStorage::setDirectoryRecursModTime(EntryIndex index,rstime_t  rec_md_TS) { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->setTS(index,rec_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_most_recent_time); }
@@ -244,6 +258,7 @@ bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
         d.type = DIR_TYPE_DIR;
         d.hash.clear() ;
         d.size   = dir_entry->dir_cumulated_size;//dir_entry->subdirs.size() + dir_entry->subfiles.size();
+        d.count  = dir_entry->dir_cumulated_files;
         d.max_mtime = dir_entry->dir_most_recent_time ;
         d.mtime     = dir_entry->dir_modtime ;
         d.name    = dir_entry->dir_name;

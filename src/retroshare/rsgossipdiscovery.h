@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2008  Robert Fernie <retroshare@lunamutt.com>                 *
- * Copyright (C) 2019  Gioacchino Mazzurco <gio@eigenlab.org>                  *
+ * Copyright (C) 2019  Gioacchino Mazzurco <gio@retroshare.cc>                  *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -47,8 +47,8 @@ extern std::shared_ptr<RsGossipDiscovery> rsGossipDiscovery;
  */
 
 enum class RsGossipDiscoveryEventType: uint32_t {
-    UNKNOWN                     = 0x00,
-    FRIEND_PEER_INFO_RECEIVED   = 0x01,
+    UNKNOWN                   = 0x00,
+    DISCOVERY_INFO_RECEIVED   = 0x01,
 };
 
 struct RsGossipDiscoveryEvent : RsEvent

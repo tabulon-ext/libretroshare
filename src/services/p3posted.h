@@ -67,6 +67,10 @@ virtual void receiveHelperChanges(std::vector<RsGxsNotify*>& changes)
 	                     std::vector<RsGxsComment>& comments,
 	                     std::vector<RsGxsVote>& votes ) override;
 
+	bool getBoardPostSummaries(
+	        const RsGxsGroupId& groupId,
+	        std::vector<RsMsgMetaData>& summaries ) override;
+
 	bool getBoardsSummaries(std::list<RsGroupMetaData>& groupInfo) override;
 
     bool subscribeToBoard( const RsGxsGroupId& boardId, bool subscribe ) override;
@@ -125,6 +129,9 @@ virtual void receiveHelperChanges(std::vector<RsGxsNotify*>& changes)
 
     bool setCommentReadStatus(const RsGxsGrpMsgIdPair &msgId, bool read) override;
     bool setPostReadStatus(const RsGxsGrpMsgIdPair &msgId, bool read) override;
+    bool setPostReadStatus( const RsGxsGroupId& boardId,
+                            const std::vector<RsGxsMessageId>& msgIds,
+                            bool read ) override;
 
     bool getRelatedComments( const RsGxsGroupId& gid,const std::set<RsGxsMessageId>& msgIds, std::vector<RsGxsComment> &comments ) override;
 

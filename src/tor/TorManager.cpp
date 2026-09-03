@@ -34,15 +34,16 @@
 #include <fstream>
 #include <stdio.h>
 
-// This works on linux only. I have no clue how to do that on windows. Anyway, this
-// is only needed for an assert that should normaly never be triggered.
-
-#if !defined(_WIN32) && !defined(__MINGW32__)
-#include <sys/syscall.h>
-#endif
 
 #include "util/rsdir.h"
 #include "retroshare/rsinit.h"
+#include <thread>
+#if !defined(_WIN32) && !defined(__MINGW32__)
+#include <unistd.h>
+#endif
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
 #include "TorManager.h"
 #include "TorProcess.h"
@@ -53,7 +54,9 @@
 
 using namespace Tor;
 
-static TorManager *rsTor = nullptr;
+static RsTor g_rsTorInstance;
+RsTor *rsTor = &g_rsTorInstance;
+static TorManager *rsTorMgr = nullptr;
 
 namespace Tor
 {
@@ -159,11 +162,15 @@ std::string TorManager::torDataDirectory() const
 
 void TorManager::setTorDataDirectory(const std::string &path)
 {
-    assert(RsDirUtil::checkCreateDirectory(std::string(path)));
+    if(!RsDirUtil::checkCreateDirectory(path))
+    {
+        RsFatal() << "TorManager::setTorDataDirectory() cannot create directory: " << path ;
+        exit(1);
+    }
 
     d->dataDir = path;
 
-    if (!d->dataDir.empty() && !ByteArray(d->dataDir).endsWith('/'))
+    if (!d->dataDir.empty() && !(d->dataDir.back() == '/'))
         d->dataDir += '/';
 }
 
@@ -302,7 +309,7 @@ void TorManager::hiddenServiceStatusChanged(int new_status,int old_status)
         ev->mTorConnectivityStatus  = RsTorConnectivityStatus::HIDDEN_SERVICE_READY;
         ev->mTorStatus = RsTorStatus::READY;
 
-        rsEvents->sendEvent(ev);
+        rsEvents->postEvent(ev);
     }
 }
 
@@ -474,7 +481,7 @@ bool TorManager::startTorManager()
                 ev->mTorManagerEventType = RsTorManagerEventCode::CONFIGURATION_NEEDED;
                 ev->mTorConnectivityStatus  = RsTorConnectivityStatus::UNKNOWN;
                 ev->mTorStatus = RsTorStatus::UNKNOWN;
-                rsEvents->sendEvent(ev);
+                rsEvents->postEvent(ev);
             }
             //emit configurationNeededChanged();
         }
@@ -511,7 +518,7 @@ void TorManager::run()
     {
         auto ev = std::make_shared<RsTorManagerEvent>();
         ev->mTorManagerEventType = RsTorManagerEventCode::TOR_MANAGER_STOPPED;
-        rsEvents->sendEvent(ev);
+        rsEvents->postEvent(ev);
     }
 }
 
@@ -677,7 +684,7 @@ void TorManagerPrivate::getConfFinished(TorControlCommand *sender)
                 ev->mTorManagerEventType = RsTorManagerEventCode::CONFIGURATION_NEEDED;
                 ev->mTorConnectivityStatus  = RsTorConnectivityStatus::UNKNOWN;
                 ev->mTorStatus = RsTorStatus::UNKNOWN;
-                rsEvents->sendEvent(ev);
+                rsEvents->postEvent(ev);
             }
         }
 }
@@ -719,6 +726,12 @@ std::string TorManagerPrivate::torExecutablePath() const
 #ifdef __APPLE__
     // on MacOS, try traditional brew installation path
 
+    path = "/opt/homebrew/opt/tor/bin" ;
+    tor_exe_path = RsDirUtil::makePath(path,filename);
+
+    if (RsDirUtil::fileExists(tor_exe_path))
+        return tor_exe_path;
+
     path = "/usr/local/opt/tor/bin" ;
     tor_exe_path = RsDirUtil::makePath(path,filename);
 
@@ -731,11 +744,15 @@ std::string TorManagerPrivate::torExecutablePath() const
 
     if(RsDirUtil::fileExists("/usr/bin/tor"))
         return std::string("/usr/bin/tor");
+
+    // If not, try the flatpack location, so as to be compatible with flatpack RS versions.
+
+    if(RsDirUtil::fileExists("/app/bin/tor"))
+        return std::string("/app/bin/tor");
 #endif
 
     RsErr() << "Could not find Tor executable anywhere!" ;
-    // Try $PATH
-    return filename.substr(1);
+    return std::string();
 }
 
 bool TorManagerPrivate::createDataDir(const std::string &path)
@@ -772,7 +789,7 @@ void TorManagerPrivate::setError(const std::string &message)
 
         ev->mTorManagerEventType = RsTorManagerEventCode::TOR_MANAGER_ERROR;
         ev->mErrorMessage = message;
-        rsEvents->sendEvent(ev);
+        rsEvents->postEvent(ev);
     }
     //emit q->errorChanged();
 }
@@ -830,34 +847,41 @@ uint16_t RsTor::socksPort()
     return instance()->control()->socksPort();
 }
 
+static RsTorStatus torStatus(Tor::TorControl::TorStatus t)
+{
+    switch(t)
+    {
+    default:
+    case TorControl::TorUnknown:   return RsTorStatus::UNKNOWN;
+    case TorControl::TorOffline:   return RsTorStatus::OFFLINE;
+    case TorControl::TorReady:     return RsTorStatus::READY;
+    }
+}
+
 RsTorStatus RsTor::torStatus()
 {
-    TorControl::TorStatus ts = instance()->control()->torStatus();
+    return ::torStatus(instance()->control()->torStatus());
+}
 
-    switch(ts)
+static RsTorConnectivityStatus torConnectivityStatus(Tor::TorControl::Status t)
+{
+    switch(t)
     {
-    case TorControl::TorOffline: return RsTorStatus::OFFLINE;
-    case TorControl::TorReady:   return RsTorStatus::READY;
-
     default:
-    case TorControl::TorUnknown: return RsTorStatus::UNKNOWN;
+    case TorControl::Error:              return RsTorConnectivityStatus::ERROR;
+    case TorControl::NotConnected:       return RsTorConnectivityStatus::NOT_CONNECTED;
+    case TorControl::Connecting:         return RsTorConnectivityStatus::CONNECTING;
+    case TorControl::SocketConnected:    return RsTorConnectivityStatus::SOCKET_CONNECTED;
+    case TorControl::Authenticating:     return RsTorConnectivityStatus::AUTHENTICATING;
+    case TorControl::Authenticated:      return RsTorConnectivityStatus::AUTHENTICATED;
+    case TorControl::HiddenServiceReady: return RsTorConnectivityStatus::HIDDEN_SERVICE_READY;
+    case TorControl::Unknown:            return RsTorConnectivityStatus::UNKNOWN;
     }
 }
 
 RsTorConnectivityStatus RsTor::torConnectivityStatus()
 {
-    TorControl::Status ts = instance()->control()->status();
-
-    switch(ts)
-    {
-    default:
-    case Tor::TorControl::Error :               return RsTorConnectivityStatus::ERROR;
-    case Tor::TorControl::NotConnected :        return RsTorConnectivityStatus::NOT_CONNECTED;
-    case Tor::TorControl::Authenticating:       return RsTorConnectivityStatus::AUTHENTICATING;
-    case Tor::TorControl::Connecting:           return RsTorConnectivityStatus::CONNECTING;
-    case Tor::TorControl::Authenticated :       return RsTorConnectivityStatus::AUTHENTICATED;
-    case Tor::TorControl::HiddenServiceReady :  return RsTorConnectivityStatus::HIDDEN_SERVICE_READY;
-    }
+    return ::torConnectivityStatus(instance()->control()->status());
 }
 
 bool RsTor::setupHiddenService()
@@ -913,12 +937,12 @@ bool RsTor::start()
 
 void RsTor::stop()
 {
-    if (rsTor) {
-        if (rsTor->isRunning()) {
-            rsTor->fullstop();
+    if (rsTorMgr) {
+        if (rsTorMgr->isRunning()) {
+            rsTorMgr->fullstop();
         }
-        delete(rsTor);
-        rsTor= nullptr;
+        delete(rsTorMgr);
+        rsTorMgr = nullptr;
     }
 }
 
@@ -931,14 +955,20 @@ void RsTor::setHiddenServiceDirectory(const std::string& dir)
     instance()->setHiddenServiceDirectory(dir);
 }
 
-TorManager *RsTor::instance()
-{
-#if !defined(_WIN32) && !defined(__MINGW32__)
-    assert(getpid() == syscall(SYS_gettid));// make sure we're not in a thread
+#ifdef __APPLE__
+#include <pthread.h>
 #endif
 
-    if(rsTor == nullptr)
-        rsTor = new TorManager;
+TorManager *RsTor::instance()
+{
+#ifdef __APPLE__
+    assert(pthread_main_np() != 0); // On macOS, ensure we are on the main thread
+#elif defined(__linux__)
+    assert(getpid() == syscall(SYS_gettid)); // On Linux, ensure we are on the main thread
+#endif
 
-    return rsTor;
+    if(rsTorMgr == nullptr)
+        rsTorMgr = new TorManager;
+
+    return rsTorMgr;
 }

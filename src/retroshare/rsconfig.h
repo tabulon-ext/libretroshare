@@ -149,7 +149,9 @@ struct RsConfigDataRates : RsSerializable
 	    mAllocTs(0),
 	    mRateOut(0), mRateMaxOut(0), mAllowedOut(0),
 	    mAllowedTs(0),
-	    mQueueIn(0), mQueueOut(0)
+	    mQueueIn(0), mQueueOut(0),
+	    mQueueOutBytes(0),
+	    mTotalIn(0), mTotalOut(0)
 	{}
 
 	/* all in kB/s */
@@ -167,6 +169,10 @@ struct RsConfigDataRates : RsSerializable
 
 	int	mQueueIn;
 	int	mQueueOut;
+	uint32_t mQueueOutBytes;
+
+	uint64_t mTotalIn;  // Total bytes received (cumulative)
+	uint64_t mTotalOut; // Total bytes sent (cumulative)
 
 	// RsSerializable interface
 	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) {
@@ -184,6 +190,10 @@ struct RsConfigDataRates : RsSerializable
 
 		RS_SERIAL_PROCESS(mQueueIn);
 		RS_SERIAL_PROCESS(mQueueOut);
+		RS_SERIAL_PROCESS(mQueueOutBytes);
+
+		RS_SERIAL_PROCESS(mTotalIn);
+		RS_SERIAL_PROCESS(mTotalOut);
 	}
 };
 
@@ -210,6 +220,48 @@ struct RSTrafficClue : RsSerializable
 		RS_SERIAL_PROCESS(peer_id);
 		RS_SERIAL_PROCESS(count);
 	}
+};
+
+/*!
+ * \brief Cumulative traffic statistics for tracking all-time data transfer
+ * Used to persist and display per-peer and per-service data usage
+ */
+struct RsCumulativeTrafficStats : RsSerializable
+{
+    uint64_t bytesIn;      //< Total bytes received
+    uint64_t bytesOut;     //< Total bytes sent
+    uint32_t countIn;      //< Number of incoming packets
+    uint32_t countOut;     //< Number of outgoing packets
+    rstime_t firstSeen;    //< Timestamp of first recorded traffic
+    rstime_t lastSeen;     //< Timestamp of most recent traffic
+
+    RsCumulativeTrafficStats() : 
+        bytesIn(0), bytesOut(0), countIn(0), countOut(0), 
+        firstSeen(0), lastSeen(0) {}
+
+    RsCumulativeTrafficStats& operator+=(const RsCumulativeTrafficStats& other) {
+        bytesIn += other.bytesIn;
+        bytesOut += other.bytesOut;
+        countIn += other.countIn;
+        countOut += other.countOut;
+        if (firstSeen == 0 || (other.firstSeen != 0 && other.firstSeen < firstSeen))
+            firstSeen = other.firstSeen;
+        if (other.lastSeen > lastSeen)
+            lastSeen = other.lastSeen;
+        return *this;
+    }
+
+    void clear() { bytesIn = bytesOut = countIn = countOut = 0; firstSeen = lastSeen = 0; }
+
+    // RsSerializable interface
+    void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) {
+        RS_SERIAL_PROCESS(bytesIn);
+        RS_SERIAL_PROCESS(bytesOut);
+        RS_SERIAL_PROCESS(countIn);
+        RS_SERIAL_PROCESS(countOut);
+        RS_SERIAL_PROCESS(firstSeen);
+        RS_SERIAL_PROCESS(lastSeen);
+    }
 };
 
 struct RsConfigNetStatus : RsSerializable
@@ -338,6 +390,39 @@ public:
 	 */
     virtual int getTrafficInfo(std::list<RSTrafficClue>& out_lst,std::list<RSTrafficClue>& in_lst) = 0 ;
 
+	/**
+	 * @brief getCumulativeTrafficByPeer returns cumulative traffic stats grouped by peer
+	 * @jsonapi{development}
+	 * @param[out] stats map of peer ID to cumulative traffic stats
+	 * @return returns true on success
+	 */
+    virtual bool getCumulativeTrafficByPeer(std::map<RsPeerId, RsCumulativeTrafficStats>& stats) = 0;
+
+	/**
+	 * @brief getCumulativeTrafficByService returns cumulative traffic stats grouped by service
+	 * @jsonapi{development}
+	 * @param[out] stats map of service ID to cumulative traffic stats
+	 * @return returns true on success
+	 */
+    virtual bool getCumulativeTrafficByService(std::map<uint16_t, RsCumulativeTrafficStats>& stats) = 0;
+
+	/**
+	 * @brief clearCumulativeTraffic clears all cumulative traffic statistics
+	 * @jsonapi{development}
+	 * @param[in] clearPeerStats if true, clears per-peer stats
+	 * @param[in] clearServiceStats if true, clears per-service stats
+	 * @return returns true on success
+	 */
+    virtual bool clearCumulativeTraffic(bool clearPeerStats = true, bool clearServiceStats = true) = 0;
+
+	/**
+	 * @brief getTotalCumulativeTraffic returns the total cumulative traffic across all peers/services
+	 * @jsonapi{development}
+	 * @param[out] stats total cumulative traffic stats
+	 * @return returns true on success
+	 */
+    virtual bool getTotalCumulativeTraffic(RsCumulativeTrafficStats& stats) = 0;
+
     /* From RsInit */
 
     // NOT IMPLEMENTED YET!
@@ -358,10 +443,39 @@ public:
 
 	virtual RsConfigUserLvl getUserLevel() = 0;
 
+	/**
+	 * @brief getNetState return network state
+	 * @jsonapi{development}
+	 * @return RsNetState
+	 */
 	virtual RsNetState getNetState() = 0;
+
+	/**
+	 * @brief getNetworkMode return network mode
+	 * @jsonapi{development}
+	 * @return RsNetworkMode
+	 */
 	virtual RsNetworkMode getNetworkMode() = 0;
+
+	/**
+	 * @brief getNatTypeMode return NAT type mode
+	 * @jsonapi{development}
+	 * @return RsNatTypeMode
+	 */
 	virtual RsNatTypeMode getNatTypeMode() = 0;
+
+	/**
+	 * @brief getNatHoleMode return NAT hole punch mode
+	 * @jsonapi{development}
+	 * @return RsNatHoleMode
+	 */
 	virtual RsNatHoleMode getNatHoleMode() = 0;
+
+	/**
+	 * @brief getConnectModes return connection modes
+	 * @jsonapi{development}
+	 * @return RsConnectModes
+	 */
 	virtual RsConnectModes getConnectModes() = 0;
 
     virtual bool getConfigurationOption(uint32_t key, std::string &opt) = 0;
@@ -394,7 +508,6 @@ public:
 	/* Data Rate Control */
 	/**
 	 * @brief SetMaxDataRates set maximum upload and download rates
-	 * @jsonapi{development}
 	 * @param[in] downKb download rate in kB
 	 * @param[in] upKb upload rate in kB
 	 * @return returns 1 on succes and 0 otherwise
@@ -416,7 +529,6 @@ public:
 
 	/**
 	 * @brief GetMaxDataRates get maximum upload and download rates
-	 * @jsonapi{development}
 	 * @param[out] inKb download rate in kB
 	 * @param[out] outKb upload rate in kB
 	 * @return returns 1 on succes and 0 otherwise

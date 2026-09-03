@@ -54,6 +54,12 @@ static const uint32_t PGP_CERTIFICATE_LIMIT_MAX_PASSWD_SIZE = 1024 ;
 //#define DEBUG_PGPHANDLER 1
 //#define PGPHANDLER_DSA_SUPPORT
 
+// When set, dumps the full parsed keyring at load time: one "type/Key id/fingerprint" line
+// plus one "N signers" line per key. That is ~2 lines per key of pure inventory (thousands of
+// lines with a large keyring) and hides no error, since key-parse failures throw. The
+// "Loaded N public keys" summary is always printed regardless. Off by default.
+//#define DEBUG_PGP_KEYRING_DUMP 1
+
 #define DEBUG_RNP 1
 #define NOT_IMPLEMENTED RsErr() << " function " << __PRETTY_FUNCTION__ << " Not implemented yet." << std::endl; assert(false); return false;
 
@@ -262,8 +268,23 @@ ops_keyring_t *OpenPGPSDKHandler::allocateOPSKeyring()
 
 void RNPPGPHandler::locked_timeStampKey(const RsPgpId& key_id)
 {
-    _public_keyring_map[key_id]._time_stamp = time(nullptr);
-    _trustdb_changed = true;
+    rstime_t now = time(nullptr);
+    _public_keyring_map[key_id]._time_stamp = now;
+
+    // Only flag the trust database for rewrite once per hour. This function is
+    // called on every PGP key usage (e.g. VerifySignBin(), which runs on every
+    // GXS identity validation and every connection). Flagging _trustdb_changed
+    // on each call caused the whole private trust database (thousands of
+    // packets) to be rewritten and re-read every few seconds. Updating the
+    // in-memory usage timestamp on every call is cheap and stays; only the
+    // on-disk sync is throttled. OpenPGPSDKHandler throttles the same way (see
+    // openpgpsdkhandler.cc); the rnp port had dropped it.
+    static rstime_t last_trustdb_update_because_of_stamp = 0;
+    if(now > last_trustdb_update_because_of_stamp + 3600)
+    {
+        _trustdb_changed = true;
+        last_trustdb_update_because_of_stamp = now;
+    }
 }
 
 bool rnp_get_passphrase_cb(rnp_ffi_t        /* ffi */,
@@ -329,7 +350,9 @@ void RNPPGPHandler::initCertificateInfo(const rnp_key_handle_t& key_handle)
     bool have_secret = false;
     rnp_key_have_secret(key_handle,&have_secret);
 
+#ifdef DEBUG_PGP_KEYRING_DUMP
     RsInfo() << (have_secret?"  [SECRET]":"          ") << " type: " << key_alg << "-" << key_bits << "  Key id: " << key_id<< " fingerprint: " << key_fprint << " Username: \"" << key_uid << "\"" ;
+#endif
 
     auto fill_cert = [key_alg,key_fprint](PGPCertificateInfo& cert,char *key_uid,const std::set<RsPgpId>& signers)
     {
@@ -360,7 +383,9 @@ void RNPPGPHandler::initCertificateInfo(const rnp_key_handle_t& key_handle)
     size_t signature_count = 0;
     rnp_key_get_signature_count(key_handle,&signature_count);
 
+#ifdef DEBUG_PGP_KEYRING_DUMP
     RsDbg() << "Key " << key_id << " has " << signature_count << " signers." ;
+#endif
 
     for(size_t i=0;i<signature_count;++i)
     {

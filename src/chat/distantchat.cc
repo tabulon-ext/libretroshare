@@ -33,7 +33,6 @@
 
 #include "rsitems/rsmsgitems.h"
 
-#include "retroshare/rsmsgs.h"
 #include "retroshare/rsidentity.h"
 #include "retroshare/rsiface.h"
 
@@ -120,7 +119,10 @@ void DistantChatService::handleRecvChatStatusItem(RsChatStatusItem *cs)
 #ifdef DEBUG_DISTANT_CHAT    
         DISTANT_CHAT_DEBUG() << "(II) Distant chat: received notification that peer refuses conversation." << std::endl;
 #endif
-        RsServer::notify()->notifyChatStatus(ChatId(DistantChatPeerId(cs->PeerId())),"Connexion refused by distant peer!") ;
+        auto ev = std::make_shared<RsDistantChatEvent>();
+        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_CONNECTION_REFUSED;
+        ev->mId = DistantChatPeerId(cs->PeerId()) ; // this has been turned into a distant chat peer id of the origin.
+        rsEvents->postEvent(ev);
     }
 
     if(cs->flags & RS_CHAT_FLAG_CLOSING_DISTANT_CONNECTION)
@@ -184,24 +186,31 @@ void DistantChatService::notifyTunnelStatus( const RsGxsTunnelId& tunnel_id, uin
     DISTANT_CHAT_DEBUG() << "DistantChatService::notifyTunnelStatus(): got notification " << std::hex << tunnel_status << std::dec << " for tunnel " << tunnel_id << std::endl;
 #endif
     
+    auto ev = std::make_shared<RsDistantChatEvent>();
+    ev->mId = DistantChatPeerId(tunnel_id);
+
+#warning TODO: I had to comment out calls to notifyPeerStatusChanged, which anyway looked misplaced here. Probably a hack.
     switch(tunnel_status)
     {
     default:
     case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_UNKNOWN: 		std::cerr << "(EE) don't know how to handle RS_GXS_TUNNEL_STATUS_UNKNOWN !" << std::endl;
-        								break ;
+                                        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_UNKNOWN;
+                                        break ;
         
-    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK:    	RsServer::notify()->notifyChatStatus(ChatId(DistantChatPeerId(tunnel_id)),"Tunnel is secured. You can talk!") ;
-        								RsServer::notify()->notifyPeerStatusChanged(tunnel_id.toStdString(),RS_STATUS_ONLINE) ;
-                            						break ;
+    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_CAN_TALK:
+                                        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_CAN_TALK;
+                                        break ;
                             
-    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_TUNNEL_DN:    	RsServer::notify()->notifyChatStatus(ChatId(DistantChatPeerId(tunnel_id)),"Tunnel is down...") ;
-			        					RsServer::notify()->notifyPeerStatusChanged(tunnel_id.toStdString(),RS_STATUS_OFFLINE) ;
-        								break ;
+    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_TUNNEL_DN:
+                                        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_TUNNEL_DN;
+                                        break ;
         
-    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_REMOTELY_CLOSED:	RsServer::notify()->notifyChatStatus(ChatId(DistantChatPeerId(tunnel_id)),"Tunnel is down...") ;
-        								RsServer::notify()->notifyPeerStatusChanged(tunnel_id.toStdString(),RS_STATUS_OFFLINE) ;
-                            						break ;
+    case RsGxsTunnelService::RS_GXS_TUNNEL_STATUS_REMOTELY_CLOSED:
+                                        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_REMOTELY_CLOSED;
+                                        break ;
     }
+
+    rsEvents->postEvent(ev);
 }
 
 void DistantChatService::receiveData( const RsGxsTunnelId& tunnel_id, unsigned char* data, uint32_t data_size)
@@ -238,7 +247,6 @@ void DistantChatService::receiveData( const RsGxsTunnelId& tunnel_id, unsigned c
 	    item->PeerId(RsPeerId(tunnel_id)) ;	// just in case, but normally this is already done.
 
 	    handleIncomingItem(item) ;
-	    RsServer::notify()->notifyListChange(NOTIFY_LIST_PRIVATE_INCOMING_CHAT, NOTIFY_TYPE_ADD);
     }
     else
 	    std::cerr << "  (EE) item could not be deserialised!" << std::endl;
@@ -319,11 +327,58 @@ bool DistantChatService::getDistantChatStatus(const DistantChatPeerId& tunnel_id
 
 bool DistantChatService::closeDistantChatConnexion(const DistantChatPeerId &tunnel_id)
 {
-    mGxsTunnels->closeExistingTunnel(RsGxsTunnelId(tunnel_id), DISTANT_CHAT_GXS_TUNNEL_SERVICE_ID) ;
-    
-    // also remove contact. Or do we wait for the notification?
-    
-    return true ;
+    // The contact has to go with the tunnel: the entry in mDistantChatContacts
+    // is the core's record of an open conversation -- handleOutgoingItem()
+    // accepts outgoing items for as long as it is there -- and
+    // markDistantChatAsClosed(), the remote-close path, removes it. Nothing
+    // removed it when we closed the conversation ourselves.
+
+    bool tunnel_closed = mGxsTunnels->closeExistingTunnel(
+                RsGxsTunnelId(tunnel_id), DISTANT_CHAT_GXS_TUNNEL_SERVICE_ID );
+
+    bool contact_removed = false;
+    {
+        RS_STACK_MUTEX(mDistantChatMtx) ;
+
+        auto it = mDistantChatContacts.find(tunnel_id) ;
+
+        if(it != mDistantChatContacts.end())
+        {
+            mDistantChatContacts.erase(it) ;
+            contact_removed = true ;
+        }
+    }
+
+    // The two can disagree in one direction only: p3GxsTunnelService prunes
+    // remotely-closed tunnels on its own after 20s, so the tunnel may already
+    // be gone while the contact is still registered. The converse -- a closed
+    // tunnel with no contact -- is an anomaly.
+    if(tunnel_closed && !contact_removed)
+        std::cerr << "(EE) closeDistantChatConnexion(): tunnel " << tunnel_id << " was closed, but no distant chat contact was registered for it." << std::endl;
+
+    // Answering true whatever happened made every client -- the chat window,
+    // the web UI, any JSON API caller -- report a conversation as closed when
+    // nothing had been closed at all, the tunnel having died on its own before.
+
+    bool closed = tunnel_closed || contact_removed ;
+
+    // The client that asked for the close knows about it; the others do not,
+    // and a conversation closed from the web UI stayed open in the desktop
+    // chat window. Polling cannot fix that: once the tunnel is gone,
+    // getDistantChatStatus() answers the same false for a conversation the
+    // peer closed (where the window should stay open) and for one we closed
+    // from another client (where it should go). Only an explicit event tells
+    // them apart, so post it here -- and every client of this core drops the
+    // conversation at the same time.
+    if(closed && rsEvents)
+    {
+        auto ev = std::make_shared<RsDistantChatEvent>();
+        ev->mEventCode = RsDistantChatEventCode::TUNNEL_STATUS_LOCALLY_CLOSED;
+        ev->mId = tunnel_id;
+        rsEvents->postEvent(ev);
+    }
+
+    return closed ;
 }
 
 uint32_t DistantChatService::getDistantChatPermissionFlags()

@@ -25,6 +25,9 @@
 class RsHistory;
 class ChatId;
 
+/**
+ * @jsonapi{development}
+ */
 extern RsHistory *rsHistory;
 
 #include <string>
@@ -112,7 +115,7 @@ public:
     /*!
      * @brief clears the message history for a given chat peer
      * @jsonapi{development}
-     * @param[in]  chatPeerID    Id of the chat/peer for which the history needs to be wiped
+     * @param[in]  chatPeerId    Id of the chat/peer for which the history needs to be wiped
      */
     virtual void clear(const ChatId &chatPeerId) = 0;
 
@@ -128,23 +131,26 @@ public:
      * @brief Set whether chat history is enabled or not
      * @jsonapi{development}
      * @param[in]  chat_type    Type of chat (see list of constants above)
-     * @param[in]  enabled      Desired state of the variable
+     * @param[in]  enable       Desired state of the variable
      */
     virtual void setEnable(uint32_t chat_type, bool enable) = 0;
 
     /*!
      * @brief Retrieves the maximum storage time period for messages in history
+     * @jsonapi{development}
      * @return max storage duration of chat.
      */
 	virtual uint32_t getMaxStorageDuration() = 0;
     /*!
      * @brief Sets the maximum storage time period for messages in history
+     * @jsonapi{development}
      * @param[in] seconds max storage duration time in seconds
      */
     virtual void     setMaxStorageDuration(uint32_t seconds) = 0;
 
     /*!
      * @brief Gets the maximum number of messages to save
+     * @jsonapi{development}
      * @param[in] chat_type Type of chat for that number limit
      * @return maximum number of messages to save
      */
@@ -152,6 +158,7 @@ public:
 
     /*!
      * @brief Sets the maximum number of messages to save
+     * @jsonapi{development}
      * @param[in] chat_type Type of chat for that number limit
      * @param[in] count     Max umber of messages, 0 meaning indefinitely
      */

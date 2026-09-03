@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2008  Robert Fernie <retroshare@lunamutt.com>                 *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -41,7 +40,6 @@
 #include "ft/ftturtlefiletransferitem.h"
 
 #include "pqi/p3linkmgr.h"
-#include "pqi/p3notify.h"
 #include "pqi/pqi.h"
 
 #include "retroshare/rstypes.h"
@@ -1257,8 +1255,7 @@ bool	ftServer::sendData(const RsPeerId& peerId, const RsFileHash& hash, uint64_t
 	{
 		//static const uint32_t	MAX_FT_CHUNK  = 32 * 1024; /* 32K */
 		//static const uint32_t	MAX_FT_CHUNK  = 16 * 1024; /* 16K */
-		//
-		static const uint32_t	MAX_FT_CHUNK  = 8 * 1024; /* 16K */
+		static const uint32_t	MAX_FT_CHUNK  = 240 * 1024; /* 240K */
 
 		/* workout size */
 		chunk = MAX_FT_CHUNK;
@@ -1317,6 +1314,7 @@ bool	ftServer::sendData(const RsPeerId& peerId, const RsFileHash& hash, uint64_t
 		offset += chunk;
 		tosend -= chunk;
 	}
+	mFileDatabase->addUploadStats(hash, chunksize);
 
 	/* clean up data */
 	free(data);
@@ -1611,24 +1609,6 @@ TurtleSearchRequestId ftServer::turtleSearch(const RsRegularExpression::Lineariz
     return mTurtleRouter->turtleSearch(expr) ;
 }
 
-#warning we should do this here, but for now it is done by turtle router.
-//   // Dont delete the item. The client (p3turtle) is doing it after calling this.
-//   //
-//   void ftServer::receiveSearchResult(RsTurtleSearchResultItem *item)
-//   {
-//       RsTurtleFTSearchResultItem *ft_sr = dynamic_cast<RsTurtleFTSearchResultItem*>(item) ;
-//
-//       if(ft_sr == NULL)
-//       {
-//   		FTSERVER_ERROR() << "(EE) ftServer::receiveSearchResult(): item cannot be cast to a RsTurtleFTSearchResultItem" << std::endl;
-//           return ;
-//       }
-//
-//   	RsServer::notify()->notifyTurtleSearchResult(ft_sr->request_id,ft_sr->result) ;
-//   }
-
-// Dont delete the item. The client (p3turtle) is doing it after calling this.
-//
 void ftServer::receiveTurtleData(const RsTurtleGenericTunnelItem *i,
                                  const RsFileHash& hash,
                                  const RsPeerId& virtual_peer_id,
@@ -1988,14 +1968,6 @@ void ftServer::ftReceiveSearchResult(RsTurtleFTSearchResultItem *item)
             cbpt->second.first(cRes);
         }
     }
-
-    // Removed since we now use RsEvent in the Qt GUI.
-    //
-    // if(!hasCallback)
-    // 	 RsServer::notify()->notifyTurtleSearchResult(
-    //	             item->PeerId(), item->request_id, item->result );
-
-    // [END DEPRECATED CODE]
 }
 
 bool ftServer::receiveSearchRequest(
@@ -2369,4 +2341,37 @@ std::error_condition ftServer::parseFilesLink(
 	std::tie(tft, ec) = RsFileTree::fromBase64(*radixPtr);
 	if(tft) collection = *tft;
 	return ec;
+}
+
+uint64_t ftServer::getCumulativeUpload(RsFileHash hash)
+{
+	return mFileDatabase->getCumulativeUpload(hash);
+}
+
+uint64_t ftServer::getCumulativeUploadAll()
+{
+	return mFileDatabase->getCumulativeUploadAll();
+}
+
+uint64_t ftServer::getCumulativeUploadNum()
+{
+	return mFileDatabase->getCumulativeUploadNum();
+}
+
+void ftServer::clearUploadStats()
+{
+	return mFileDatabase->clearUploadStats();
+}
+
+void ftServer::setUploadStatsRetentionDays(int days)
+{
+    if (mFileDatabase)
+        mFileDatabase->setUploadStatsRetentionDays(days);
+}
+
+int ftServer::getUploadStatsRetentionDays()
+{
+    if (mFileDatabase)
+        return mFileDatabase->getUploadStatsRetentionDays();
+    return 0;
 }

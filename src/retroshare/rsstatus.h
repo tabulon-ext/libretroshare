@@ -24,6 +24,10 @@
 
 class RsStatus;
 
+/**
+ * Pointer to global instance of RsStatus service implementation
+ * @jsonapi{development}
+ */
 extern RsStatus *rsStatus;
 
 #include <iostream>
@@ -32,28 +36,36 @@ extern RsStatus *rsStatus;
 #include <list>
 #include <retroshare/rstypes.h>
 
+enum class RsStatusValue: int32_t {
+    RS_STATUS_OFFLINE  = 0x00,
+    RS_STATUS_AWAY     = 0x01,
+    RS_STATUS_BUSY     = 0x02,
+    RS_STATUS_ONLINE   = 0x03,
+    RS_STATUS_INACTIVE = 0x04,
 
-const uint32_t RS_STATUS_OFFLINE  = 0x0000;
-const uint32_t RS_STATUS_AWAY     = 0x0001;
-const uint32_t RS_STATUS_BUSY     = 0x0002;
-const uint32_t RS_STATUS_ONLINE   = 0x0003;
-const uint32_t RS_STATUS_INACTIVE = 0x0004;
-
-const uint32_t RS_STATUS_COUNT    = 0x0005; // count of status
+    RS_STATUS_COUNT    = 0x05, // count of status
+};
 
 //! data object for peer status information
 /*!
  * data object used for peer status information
  */
-class StatusInfo
+class StatusInfo : public RsSerializable
 {
 	public:
-	StatusInfo() : status(RS_STATUS_OFFLINE), time_stamp(0)	{}
+    StatusInfo() : status(RsStatusValue::RS_STATUS_OFFLINE), time_stamp(0)	{}
 
 	public:
 	RsPeerId id;
-	uint32_t status;
+    RsStatusValue status;
 	rstime_t time_stamp; /// for owner time set, and for their peers time sent
+
+	void serial_process( RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx ) override
+	{
+		RS_SERIAL_PROCESS(id);
+		RS_SERIAL_PROCESS(status);
+		RS_SERIAL_PROCESS(time_stamp);
+	}
 };
 
 
@@ -67,29 +79,34 @@ class RsStatus
 
 	/**
 	 * This retrieves the own status info
-	 * @param statusInfo is populated with own status
+	 * @jsonapi{development}
+	 * @param[out] statusInfo is populated with own status
 	 */
 	virtual bool getOwnStatus(StatusInfo& statusInfo) = 0;
 
 	/**
 	 * This retrieves the status info on the client's peers
-	 * @param statusInfo is populated with client's peer's status
+	 * @jsonapi{development}
+	 * @param[out] statusInfo is populated with client's peer's status
 	 */
 	virtual bool getStatusList(std::list<StatusInfo>& statusInfo) = 0;
 
 	/**
 	 * This retrieves the status info one peer
-	 * @param statusInfo is populated with client's peer's status
+	 * @jsonapi{development}
+	 * @param[in] id client's peer id
+	 * @param[out] statusInfo is populated with client's peer's status
 	 */
 	virtual bool getStatus(const RsPeerId &id, StatusInfo &statusInfo) = 0;
 
 	/**
 	 * send the client's status to his/her peers
-	 * @param id the peer to send the status (empty, send to all)
-	 * @param status the status of the peers
+	 * @jsonapi{development}
+	 * @param[in] id the peer to send the status (empty, send to all)
+	 * @param[in] status the status of the peers
 	 * @return will return false if status info does not belong to client
 	 */
-	virtual bool sendStatus(const RsPeerId &id, uint32_t status)                 = 0;
+    virtual bool sendStatus(const RsPeerId &id, RsStatusValue status)                 = 0;
 };
 
 

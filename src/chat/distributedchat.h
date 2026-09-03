@@ -22,7 +22,7 @@
 #pragma once
 
 #include <retroshare/rstypes.h>
-#include <retroshare/rsmsgs.h>
+#include <retroshare/rschats.h>
 #include <retroshare/rsservicecontrol.h>
 
 typedef RsPeerId ChatLobbyVirtualPeerId ;
@@ -98,7 +98,7 @@ class DistributedChatService
 
 	private:
 		/// make some statistics about time shifts, to prevent various issues. 
-		void addTimeShiftStatistics(int shift) ;
+		void addTimeShiftStatistics(int shift, const RsGxsId& gxsId) ;
 
 		void handleRecvChatLobbyListRequest(RsChatLobbyListRequestItem *item) ;
 		void handleRecvChatLobbyList(RsChatLobbyListItem *item) ;

@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2004-2006  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2020-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -281,7 +280,7 @@ struct DirStub : RsSerializable
 struct DirDetails : RsSerializable
 {
 	DirDetails() : parent(nullptr), prow(0), ref(nullptr),
-        type(DIR_TYPE_UNKNOWN), size(0), mtime(0), max_mtime(0) {}
+        type(DIR_TYPE_UNKNOWN), size(0), mtime(0), max_mtime(0), count(0) {}
 
 
 	/* G10h4ck do we still need to keep this as void* instead of uint64_t for
@@ -303,6 +302,7 @@ struct DirDetails : RsSerializable
 	uint32_t mtime;			// file/directory modification time, according to what the system reports
 	FileStorageFlags flags;
 	uint32_t max_mtime ;	// maximum modification time of the whole hierarchy below.
+	uint32_t count;			// cumulative number of files in the directory hierarchy.
 
     std::vector<DirStub> children;
     std::list<RsNodeGroupId> parent_groups;	// parent groups for the shared directory
@@ -332,6 +332,7 @@ struct DirDetails : RsSerializable
 		RS_SERIAL_PROCESS(mtime);
 		RS_SERIAL_PROCESS(flags);
 		RS_SERIAL_PROCESS(max_mtime);
+		RS_SERIAL_PROCESS(count);
 		RS_SERIAL_PROCESS(children);
 		RS_SERIAL_PROCESS(parent_groups);
 	}

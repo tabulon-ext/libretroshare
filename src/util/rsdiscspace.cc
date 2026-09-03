@@ -4,7 +4,6 @@
  *                                                                             *
  * Copyright (C) 2010  Cyril Soler <csoler@users.sourceforge.net>              *
  * Copyright (C) 2016-2022  Gioacchino Mazzurco <gio@retroshare.cc>            *
- * Copyright (C) 2022  Asociación Civil Altermundi <info@altermundi.net>       *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -195,7 +194,13 @@ bool RsDiscSpace::checkForDiscSpace(RsDiscSpace::DiscLocation loc)
 	bool res = _current_size[loc] > _size_limit_mb ;
 
 	if(_last_res[loc] && !res)
-		RsServer::notify()->notifyDiskFull(loc,_size_limit_mb) ;
+    {
+        auto ev = std::make_shared<RsSystemEvent>();
+        ev->mEventCode = RsSystemEventCode::DISK_SPACE_ERROR;
+        ev->mDiskErrorLocation = loc;
+        ev->mDiskErrorSizeLimit = _size_limit_mb;
+        rsEvents->postEvent(ev);
+    }
 
 	_last_res[loc] = res ;
 

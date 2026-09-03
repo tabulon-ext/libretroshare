@@ -4,7 +4,6 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2004-2008  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2022       Asociación Civil Altermundi <info@altermundi.net>  *
  * Copyright (C) 2019-2022  Gioacchino Mazzurco <gio@retroshare.cc>            *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
@@ -1450,8 +1449,8 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 			rsEvents->postEvent(std::move(ev));
 		}
 
-		if (auth_diagnostic == RS_SSL_HANDSHAKE_DIAGNOSTIC_ISSUER_UNKNOWN)
-			RsServer::notify()->AddPopupMessage(RS_POPUP_CONNECT_ATTEMPT, pgpId.toStdString(), sslCn, sslId.toStdString()); /* notify Connect Attempt */
+        //if (auth_diagnostic == RS_SSL_HANDSHAKE_DIAGNOSTIC_ISSUER_UNKNOWN)
+        //	RsServer::notify()->AddPopupMessage(RS_POPUP_CONNECT_ATTEMPT, pgpId.toStdString(), sslCn, sslId.toStdString()); /* notify Connect Attempt */
 
 		return verificationFailed;
 	}
@@ -1478,7 +1477,7 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 			rsEvents->postEvent(std::move(ev));
 		}
 
-		RsServer::notify()->AddPopupMessage(RS_POPUP_CONNECT_ATTEMPT, pgpId.toStdString(), sslCn, sslId.toStdString()); /* notify Connect Attempt */
+        //RsServer::notify()->AddPopupMessage(RS_POPUP_CONNECT_ATTEMPT, pgpId.toStdString(), sslCn, sslId.toStdString()); /* notify Connect Attempt */
 
 		return verificationFailed;
 	}

@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright 2007-2011 by Robert Fernie.                                       *
- * Copyright (C) 2015-2018  Gioacchino Mazzurco <gio@eigenlab.org>             *
+ * Copyright (C) 2015-2018  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -484,20 +484,20 @@ void p3LinkMgrIMPL::tickMonitors()
 //                }
 
 				/* notify GUI */
-				if (rsEvents && (peer.actions & RS_PEER_CONNECTED))
+                if (rsEvents && (peer.actions & RS_PEER_CONNECTED))
 				{
-					auto e = std::make_shared<RsConnectionEvent>();
-					e->mConnectionInfoCode = RsConnectionEventCode::PEER_CONNECTED;
+                    auto e = std::make_shared<RsFriendListEvent>();
+                    e->mEventCode = RsFriendListEventCode::NODE_CONNECTED;
 					e->mSslId = peer.id;
 					rsEvents->postEvent(e);
 				}
-				if (rsEvents && (peer.actions & RS_PEER_DISCONNECTED))
-				{
-					auto e = std::make_shared<RsConnectionEvent>();
-					e->mConnectionInfoCode = RsConnectionEventCode::PEER_DISCONNECTED;
-					e->mSslId = peer.id;
-					rsEvents->postEvent(e);
-				}
+                if (rsEvents && (peer.actions & RS_PEER_DISCONNECTED))
+                {
+                    auto e = std::make_shared<RsFriendListEvent>();
+                    e->mEventCode = RsFriendListEventCode::NODE_DISCONNECTED;
+                    e->mSslId = peer.id;
+                    rsEvents->postEvent(e);
+                }
 			}
 		}
 

@@ -1,7 +1,6 @@
 /*
  * RetroShare Service Android
  * Copyright (C) 2016-2022  Gioacchino Mazzurco <gio@retroshare.cc>
- * Copyright (C) 2022  Asociación Civil Altermundi <info@altermundi.net>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -74,6 +73,10 @@ RetroShareServiceAndroid::start(
 		RS_ERR("Retroshare core initalization failed with: ", initResult);
 		return jni::Make<ErrorConditionWrap>(env, std::errc::no_child_process);
 	}
+
+#ifdef RS_JSONAPI
+	RsInit::startupWebServices(conf, true);
+#endif
 
 	return jni::Make<ErrorConditionWrap>(env, std::error_condition());
 }

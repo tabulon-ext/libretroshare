@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2008  Robert Fernie <retroshare@lunamutt.com>                 *
- * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2020  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -181,13 +180,18 @@ const TransferRequestFlags RS_FILE_REQ_NO_SEARCH           ( 0x02000000 );	// di
 
 enum class RsSharedDirectoriesEventCode: uint8_t {
     UNKNOWN                  = 0x00,
-    STARTING_DIRECTORY_SWEEP = 0x01, // (void)
-    HASHING_FILE             = 0x02, // mMessage: full path and hashing speed of the file being hashed
-    DIRECTORY_SWEEP_ENDED    = 0x03, // (void)
-    SAVING_FILE_INDEX        = 0x04, // (void)
-    EXTRA_LIST_FILE_ADDED    = 0x05, // (void)
-    EXTRA_LIST_FILE_REMOVED  = 0x06, // (void)
-    SHARED_DIRS_LIST_CHANGED = 0x07, // (void)
+    HASHING_PROCESS_STARTED  = 0x01, // (void)
+    HASHING_PROCESS_PAUSED   = 0x02, // (void)
+    HASHING_PROCESS_RESUMED  = 0x04, // (void)
+    HASHING_PROCESS_FINISHED = 0x05, // (void)
+    HASHING_FILE             = 0x06, // mMessage: full path and hashing speed of the file being hashed
+    SAVING_FILE_INDEX        = 0x07, // (void)
+    EXTRA_LIST_FILE_ADDED    = 0x08, // (void)
+    EXTRA_LIST_FILE_REMOVED  = 0x09, // (void)
+    SHARED_DIRS_LIST_CHANGED = 0x0a, // (void) // list of own base shared directories/flags has changed. New sweep will occur soon
+    FRIEND_DIR_LIST_UPDATED  = 0x0b, // NOTIFY_LIST_DIRLIST_FRIENDS, friend dir list has been updated
+    OWN_DIR_LIST_UPDATED     = 0x0c, // NOTIFY_LIST_DIRLIST_LOCAL  , own    dir list has been updated
+    OWN_DIR_LIST_PROCESSING  = 0x0d, // NOTIFY_LIST_DIRLIST_LOCAL prechange
 };
 
 enum class RsFileTransferEventCode: uint8_t {
@@ -197,49 +201,39 @@ enum class RsFileTransferEventCode: uint8_t {
     NEW_DISTANT_SEARCH_RESULTS  = 0x03
 };
 
-struct RS_DEPRECATED_FOR("Packing arbitrary data into an std::string is bad idea")
-RsSharedDirectoriesEvent: RsEvent
+struct RsSharedDirectoriesEvent: RsEvent
 {
-	RsSharedDirectoriesEvent()  : RsEvent(RsEventType::SHARED_DIRECTORIES), mEventCode(RsSharedDirectoriesEventCode::UNKNOWN) {}
+    RsSharedDirectoriesEvent()
+       : RsEvent(RsEventType::SHARED_DIRECTORIES), mEventCode(RsSharedDirectoriesEventCode::UNKNOWN),
+                  mHashingSpeed(0) {}
 	~RsSharedDirectoriesEvent() override = default;
 
 	///* @see RsEvent @see RsSerializable
 	void serial_process( RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx ) override
-	{
-		RsEvent::serial_process(j, ctx);
+    {
+        RsEvent::serial_process(j, ctx);
 
-		RS_SERIAL_PROCESS(mEventCode);
-		RS_SERIAL_PROCESS(mMessage);
-	}
+        RS_SERIAL_PROCESS(mEventCode);
+        RS_SERIAL_PROCESS(mFilePath);
+        RS_SERIAL_PROCESS(mFileHash);
+        RS_SERIAL_PROCESS(mHashingSpeed);
+        RS_SERIAL_PROCESS(mHashCounter) ;
+        RS_SERIAL_PROCESS(mTotalFilesToHash) ;
+        RS_SERIAL_PROCESS(mTotalHashedSize) ;
+        RS_SERIAL_PROCESS(mTotalSizeToHash) ;
+    }
 
     RsSharedDirectoriesEventCode mEventCode;
-    std::string mMessage;
+
+    std::string mFilePath; 			// Complete path of the file being hashed
+    RsFileHash mFileHash;  			// File hash, null if error occurred
+    uint32_t mHashingSpeed;  			// Hashing speed in MB/s
+    uint64_t mHashCounter ;		// index of current file
+    uint64_t mTotalFilesToHash ;// total number of files to hash
+    uint64_t mTotalHashedSize ;		// total hashed size so far, in MB
+    uint64_t mTotalSizeToHash ;		// total size to hash in MB
 };
 
-struct RsFileHashingCompletedEvent: RsEvent
-{
-	RsFileHashingCompletedEvent():
-	    RsEvent(RsEventType::FILE_HASHING_COMPLETED), mHashingSpeed(0) {}
-
-	///* @see RsEvent @see RsSerializable
-	void serial_process( RsGenericSerializer::SerializeJob j,
-	                     RsGenericSerializer::SerializeContext& ctx ) override
-	{
-		RsEvent::serial_process(j, ctx);
-		RS_SERIAL_PROCESS(mFilePath);
-		RS_SERIAL_PROCESS(mFileHash);
-		RS_SERIAL_PROCESS(mHashingSpeed);
-	}
-
-	/// Complete path of the file being hashed
-	std::string mFilePath;
-
-	/// File hash, null if error occurred
-	RsFileHash mFileHash;
-
-	/// Hashing speed in MB/s
-	double mHashingSpeed;
-};
 
 struct RsFileTransferEvent: RsEvent
 {
@@ -797,11 +791,23 @@ public:
 		virtual void setFilePermDirectDL(uint32_t perm)=0;
 
     /**
-     * @brief Get Direct Download File Permission
+     * @brief Set Direct Download File Permission
      * @jsonapi{development}
      * @return mFilePermDirectDLPolicy direct download permission
      */
 		virtual uint32_t filePermDirectDL()=0;
+
+    /**
+     * @brief Set Upload Statistics Retention in Days
+     * @param days Number of days to keep upload statistics (0 = keep forever)
+     */
+    virtual void setUploadStatsRetentionDays(int days) = 0;
+
+    /**
+     * @brief Get Upload Statistics Retention in Days
+     * @return Number of days to keep upload statistics
+     */
+    virtual int getUploadStatsRetentionDays() = 0;
 
 	/**
 	 * @brief Request remote files search
@@ -1216,6 +1222,12 @@ public:
 
 		virtual bool	ignoreDuplicates() = 0;
 		virtual void 	setIgnoreDuplicates(bool ignore) = 0;
+
+		virtual uint64_t getCumulativeUpload(RsFileHash hash) = 0;
+		virtual uint64_t getCumulativeUploadAll() = 0;
+		virtual uint64_t getCumulativeUploadNum() = 0;
+
+		virtual void clearUploadStats() = 0;
 
 	virtual ~RsFiles() = default;
 };

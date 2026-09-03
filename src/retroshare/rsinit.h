@@ -2,7 +2,7 @@
  * libretroshare/src/retroshare: rsinit.h                                      *
  *                                                                             *
  * Copyright (C) 2004-2014  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2016-2019  Gioacchino Mazzurco <gio@altermundi.net>           *
+ * Copyright (C) 2016-2019  Gioacchino Mazzurco <gio@retroshare.cc>           *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -247,6 +247,8 @@ public:
 	static bool RsClearAutoLogin() ;
 
     static std::string executablePath() ;
+	static const char* libRetroShareVersion();
+
 private:
 	/** @brief Lock profile directory
 	 * param[in] accountDir account directory to lock
@@ -381,7 +383,19 @@ public:
     static bool getCurrentAccountOptions(bool& is_hidden,bool& is_tor_auto,bool& is_first_time) ;
 
 	static bool checkCreateAccountDirectory();		// Generate the hierarchy of directories below ~/.retroshare/[SSL dir]/
+
+	/**
+	 * @brief Check if the running node is a hidden node
+	 * @jsonapi{development}
+	 * @return true if the running node is a hidden node
+	 */
     static bool isHiddenNode() ;                    // true if the running node is a hidden node. Used to choose which services to start.
+
+	/**
+	 * @brief Check if the running node is a hidden node using automated Tor management
+	 * @jsonapi{development}
+	 * @return true if the running node is a hidden node using automated Tor management
+	 */
     static bool isTorAuto() ;                       // true if the running node is a hidden node using automated Tor management
 
 	static std::string AccountDirectory();			// linux: ~/.retroshare/[SSL dir]/
@@ -417,9 +431,18 @@ public:
 
 	/**
 	 * @brief Normal way to attempt login
-	 * @jsonapi{development,unauthenticated}
+	 * @jsonapi{development,manualwrapper}
+	 * unauthenticated
 	 * @param[in] account Id of the account to which attempt login
 	 * @param[in] password Password for the given account
+	 * param[in] apiUser (JSON API only) string containing username for JSON API
+	 *	so it can be later used to authenticate JSON API calls. It is passed
+	 *	down to @see RsJsonApi::authorizeUser under the hood.
+	 * param[in] apiPass (JSON API only) string containing password for JSON API
+	 *	so it can be later used to authenticate JSON API calls. It is passed
+	 *	down to @see RsJsonApi::authorizeUser under the hood.
+	 *	To improve security we strongly advise to not use the same as the
+	 *	password used for the PGP key.
 	 * @return RsInit::OK if login attempt success, error code otherwhise
 	 */
 	RsInit::LoadCertificateStatus attemptLogin(
@@ -508,4 +531,35 @@ public:
 	                     const std::string& password, std::string& errorMessage,
 	                     bool makeHidden = false, bool makeAutoTor = false );
 #endif // !RS_VERSION_AT_LEAST(0,6,6)
+
+    /**
+     * @brief askForPassword	Requests the PGP passphrase for all sorts of uses: signing identities, signing messages, etc.
+     * @param title				Title of the window where to ask the passphrase (ex: "Password requested")
+     * @param key_details		Additional details to be shown about the key (ex: key id, name, etc)
+     * @param prev_is_bad		true when previous password was wrong. Used to display some error.
+     * @param password			[out] supplied password.
+     * @param cancelled			[out] true when password request was cancelled.
+     * @return
+     *
+     * This method *should not* be visible in the json api.
+     */
+    static bool askForPassword(const std::string& title, const std::string& key_details, bool prev_is_bad, std::string& password,bool& cancelled);
+
+    /**
+     * @brief clearPgpPassphrase	Remove previously cached PGP passphrase.
+     * @return 						always true (success)
+     *
+     * This method *should not* be visible in the json api.
+     */
+
+    static bool clearPgpPassphrase();
+    /**
+     * @brief cachePgpPassphrase	store PGP passphrase to be used by internal components
+     * @return 						always true (success)
+     *
+     * This method *should not* be visible in the json api.
+     */
+
+    static bool cachePgpPassphrase(const std::string& passwd);
 };
+

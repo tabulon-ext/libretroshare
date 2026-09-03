@@ -36,68 +36,70 @@
  *
  */
 
-class p3Wiki: public RsGenExchange, public RsWiki, 
-	public RsTickEvent
+class p3Wiki: public RsGenExchange, public RsWiki
 {
 public:
-    p3Wiki(RsGeneralDataService* gds, RsNetworkExchangeService* nes, RsGixs *gixs);
-virtual RsServiceInfo getServiceInfo();
-static uint32_t wikiAuthenPolicy();
+	p3Wiki(RsGeneralDataService* gds, RsNetworkExchangeService* nes, RsGixs *gixs);
+	virtual RsServiceInfo getServiceInfo() override;
+	static uint32_t wikiAuthenPolicy();
+    
+	/* Required by base class */
+	virtual void service_tick() override;
 
 protected:
-
-virtual void notifyChanges(std::vector<RsGxsNotify*>& changes) ;
-
-        // Overloaded from RsTickEvent.
-virtual void handle_event(uint32_t event_type, const std::string &elabel);
+	/* Triggered on GXS updates */
+	virtual void notifyChanges(std::vector<RsGxsNotify*>& changes) override;
 
 public:
+	/* GXS Data Access Methods */
+	virtual bool getCollections(const uint32_t &token, std::vector<RsWikiCollection> &collections) override;
+	virtual bool getSnapshots(const uint32_t &token, std::vector<RsWikiSnapshot> &snapshots) override;
+	virtual bool getComments(const uint32_t &token, std::vector<RsWikiComment> &comments) override;
+	virtual bool getRelatedSnapshots(const uint32_t &token, std::vector<RsWikiSnapshot> &snapshots) override;
+    
+	virtual bool submitCollection(uint32_t &token, RsWikiCollection &collection) override;
+	virtual bool submitSnapshot(uint32_t &token, RsWikiSnapshot &snapshot) override;
+	virtual bool submitComment(uint32_t &token, RsWikiComment &comment) override;
+	virtual bool updateCollection(uint32_t &token, RsWikiCollection &collection) override;
 
-virtual void service_tick();
+	/* Blocking Interfaces */
+	virtual bool createCollection(RsWikiCollection &collection) override;
+	virtual bool updateCollection(const RsWikiCollection &collection) override;
+	virtual bool getCollections(const std::list<RsGxsGroupId> groupIds, std::vector<RsWikiCollection> &groups) override;
+	virtual bool getSnapshot(const RsGxsGrpMsgIdPair& msgId, RsWikiSnapshot& snapshot) override;
+	virtual bool getSnapshots(const RsGxsGroupId& groupId, std::vector<RsWikiSnapshot>& snapshots) override;
+	virtual bool getRelatedSnapshots(const RsGxsGrpMsgIdPair& msgId, std::vector<RsWikiSnapshot>& snapshots) override;
+	virtual bool setMessageReadStatus(const RsGxsGrpMsgIdPair& msgId, bool read) override;
 
-        /* Specific Service Data */
-virtual bool getCollections(const uint32_t &token, std::vector<RsWikiCollection> &collections) override;
-virtual bool getSnapshots(const uint32_t &token, std::vector<RsWikiSnapshot> &snapshots) override;
-virtual bool getComments(const uint32_t &token, std::vector<RsWikiComment> &comments) override;
+	/* Moderator management */
+	virtual bool addModerator(const RsGxsGroupId& grpId, const RsGxsId& moderatorId) override;
+	virtual bool removeModerator(const RsGxsGroupId& grpId, const RsGxsId& moderatorId) override;
+	virtual bool getModerators(const RsGxsGroupId& grpId, std::list<RsGxsId>& moderators) override;
+	virtual bool isActiveModerator(const RsGxsGroupId& grpId, const RsGxsId& authorId, rstime_t editTime) override;
 
-virtual bool getRelatedSnapshots(const uint32_t &token, std::vector<RsWikiSnapshot> &snapshots) override;
+	/* Content fetching for merge operations (Todo 3) */
+	virtual bool getSnapshotContent(const RsGxsGroupId& grpId,
+	                                const RsGxsMessageId& snapshotId,
+	                                std::string& content) override;
+	virtual bool getSnapshotsContent(const RsGxsGroupId& grpId,
+	                                 const std::vector<RsGxsMessageId>& snapshotIds,
+	                                 std::map<RsGxsMessageId, std::string>& contents) override;
 
-virtual bool submitCollection(uint32_t &token, RsWikiCollection &collection) override;
-virtual bool submitSnapshot(uint32_t &token, RsWikiSnapshot &snapshot) override;
-virtual bool submitComment(uint32_t &token, RsWikiComment &comment) override;
+	/* Notification support */
+	virtual bool getWikiStatistics(GxsServiceStatistic& stats) override;
+	virtual void setMessageReadStatus(uint32_t& token, const RsGxsGrpMsgIdPair& msgId, bool read) override;
 
-virtual bool updateCollection(uint32_t &token, RsWikiCollection &collection) override;
+protected:
+	bool acceptNewMessage(const RsGxsMsgMetaData *msgMeta, uint32_t size) override;
 
-// Blocking Interfaces.
-virtual bool createCollection(RsWikiCollection &collection) override;
-virtual bool updateCollection(const RsWikiCollection &collection) override;
-virtual bool getCollections(const std::list<RsGxsGroupId> groupIds, std::vector<RsWikiCollection> &groups) override;
-
-	private:
-
-std::string genRandomId();
-//	RsMutex mWikiMtx;
-
-
-virtual void generateDummyData();
-
-	// Dummy Stuff.
-	void dummyTick();
-
-	bool mAboutActive;
-	uint32_t mAboutToken;
-	int  mAboutLines;
-	RsGxsMessageId mAboutThreadId;
-
-	bool mImprovActive;
-	uint32_t mImprovToken;
-	int  mImprovLines;
-	RsGxsMessageId mImprovThreadId;
-
-	bool mMarkdownActive;
-	uint32_t mMarkdownToken;
-	int  mMarkdownLines;
-	RsGxsMessageId mMarkdownThreadId;
+private:
+	bool checkModeratorPermission(const RsGxsGroupId& grpId, const RsGxsId& authorId, const RsGxsId& originalAuthorId, rstime_t editTime);
+	bool getCollectionData(const RsGxsGroupId& grpId, RsWikiCollection& collection);
+	bool getOriginalMessageAuthor(const RsGxsGroupId& grpId, const RsGxsMessageId& msgId, RsGxsId& authorId);
+	
+	// Track known wikis to distinguish NEW from UPDATED
+	std::map<RsGxsGroupId, rstime_t> mKnownWikis;
+	RsMutex mKnownWikisMutex;
 };
 
 #endif 

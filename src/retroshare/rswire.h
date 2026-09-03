@@ -78,9 +78,9 @@ class RsWireGroup: public RsGxsGenericGroupData
 	uint32_t mGroupRepublishes;
 	uint32_t mGroupLikes;
 	uint32_t mGroupReplies;
-	// how do we handle these. TODO
-	// uint32_t mGroupFollowing;
-	// uint32_t mGroupFollowers;
+
+	uint32_t mGroupFollowing;
+	uint32_t mGroupFollowers;
 
 	// These are this groups REF / RESPONSE msgs from others.
 	uint32_t mRefMentions; // TODO how to handle this?
@@ -268,10 +268,23 @@ virtual bool getPulseFocus(const RsGxsGroupId &groupId, const RsGxsMessageId &ms
     virtual bool getWireStatistics(const RsGxsGroupId& wireId, RsWireStatistics& stat) = 0;
     virtual bool getWireGroupStatistics(const RsGxsGroupId& wireId,GxsGroupStatistic& stat) = 0;
 
+    // Mark a single pulse as read/unread. Blocking, no token management needed.
+    virtual bool setMessageReadStatus(const RsGxsGrpMsgIdPair& msgId, bool read) = 0;
+
+    RS_DEPRECATED_FOR(setMessageReadStatus)
     virtual void setMessageReadStatus(uint32_t& token, const RsGxsGrpMsgIdPair& msgId, bool read) = 0;
 
     virtual bool getContentSummaries( const RsGxsGroupId& groupId,
                                       std::vector<RsMsgMetaData>& summaries ) = 0;
+
+    virtual bool subscribeToGroup(uint32_t& token, const RsGxsGroupId& groupId, bool subscribe) = 0;
+
+    // Simple subscribe/unsubscribe API without token management (for UI use)
+    // Tokens are handled internally by libretroshare
+    virtual bool subscribe(const RsGxsGroupId& groupId, bool subscribe) = 0;
+
+    virtual uint32_t getFollowingCount() = 0;
+    virtual bool getSubscribedGroups(std::list<RsGxsGroupId>& groupIds) = 0;
 
 };
 

@@ -3,9 +3,8 @@
  *                                                                             *
  * libretroshare: retroshare core library                                      *
  *                                                                             *
- * Copyright (C) 2019-2020  Gioacchino Mazzurco <gio@eigenlab.org>             *
+ * Copyright (C) 2019-2020  Gioacchino Mazzurco <gio@retroshare.cc>             *
  * Copyright (C) 2019-2020  Retroshare Team <contact@retroshare.cc>            *
- * Copyright (C) 2020  Asociación Civil Altermundi <info@altermundi.net>       *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -56,7 +55,7 @@ std::error_condition RsEventsService::isEventTypeInvalid(RsEventType eventType)
 		return RsEventsErrorNum::EVENT_TYPE_UNDEFINED;
 
 	if( eventType < RsEventType::__NONE ||
-	        eventType >= static_cast<RsEventType>(mHandlerMaps.size()) )
+            static_cast<uint32_t>(eventType) >= mHandlerMaps.size() )
 		return RsEventsErrorNum::EVENT_TYPE_OUT_OF_RANGE;
 
 	return std::error_condition();
@@ -93,6 +92,25 @@ RsEventsHandlerId_t RsEventsService::generateUniqueHandlerId()
 	return generateUniqueHandlerId_unlocked();
 }
 
+RsEventType RsEventsService::getDynamicEventType(const std::string& unique_service_identifier)
+{
+    RS_STACK_MUTEX(mHandlerMapMtx);
+
+    auto it = mRegisteredExtraEventTypes.find(unique_service_identifier);
+
+    if(it == mRegisteredExtraEventTypes.end())
+    {
+        mRegisteredExtraEventTypes[unique_service_identifier] = static_cast<RsEventType>(mHandlerMaps.size());
+        mHandlerMaps.push_back(  std::map<RsEventsHandlerId_t,std::function<void(std::shared_ptr<const RsEvent>)> >());
+
+        it = mRegisteredExtraEventTypes.find(unique_service_identifier);
+
+        RsInfo() << "Registered new dynamic event Type " << (int)it->second << " for service \"" << unique_service_identifier << "\"" << std::endl;
+    }
+
+    return it->second;
+}
+
 RsEventsHandlerId_t RsEventsService::generateUniqueHandlerId_unlocked()
 {
 	if(++mLastHandlerId) return mLastHandlerId; // Avoid 0 after overflow
@@ -109,12 +127,37 @@ std::error_condition RsEventsService::registerEventsHandler(
 		if(std::error_condition ec = isEventTypeInvalid(eventType))
 			return ec;
 
-	if(!hId) hId = generateUniqueHandlerId_unlocked();
-	else if (hId > mLastHandlerId)
-	{
-		print_stacktrace();
-		return RsEventsErrorNum::INVALID_HANDLER_ID;
-	}
+    if(hId > mLastHandlerId)
+    {
+        print_stacktrace();
+        RsErr() << "You are probably using an uninitialized handler ID, which is not permitted. Allocating a new one" ;
+        hId=0;
+    }
+
+    if(!hId)
+        hId = generateUniqueHandlerId_unlocked();
+    else
+    {
+        /* A non-zero hId is a legitimate, documented use case: the caller may
+         * provide an id previously obtained from generateUniqueHandlerId() (see
+         * registerEventsHandler() doc in rsevents.h). This is exactly what the
+         * JSON API event-stream wrapper does, because its SSE callbacks capture
+         * the id in order to unregister themselves later. Only a hId that is
+         * actually already registered is a true override worth reporting. */
+        bool alreadyRegistered = false;
+        for(const auto& handlerMap : mHandlerMaps)
+            if(handlerMap.find(hId) != handlerMap.end())
+            {
+                alreadyRegistered = true;
+                break;
+            }
+
+        if(alreadyRegistered)
+        {
+            print_stacktrace();
+            RsWarn() << "Overriding an existing event handler ID with a new callback. This is very unexpected. Make sure you know what you are doing." ;
+        }
+    }
 
 	mHandlerMaps[static_cast<std::size_t>(eventType)][hId] = multiCallback;
 	return std::error_condition();
@@ -123,18 +166,33 @@ std::error_condition RsEventsService::registerEventsHandler(
 std::error_condition RsEventsService::unregisterEventsHandler(
         RsEventsHandlerId_t hId )
 {
-	RS_STACK_MUTEX(mHandlerMapMtx);
+	std::error_condition retval = RsEventsErrorNum::INVALID_HANDLER_ID;
 
-	for(uint32_t i=0; i<mHandlerMaps.size(); ++i)
 	{
-		auto it = mHandlerMaps[i].find(hId);
-		if(it != mHandlerMaps[i].end())
+		RS_STACK_MUTEX(mHandlerMapMtx);
+
+		for(uint32_t i=0; i<mHandlerMaps.size(); ++i)
 		{
-			mHandlerMaps[i].erase(it);
-			return std::error_condition();
+			auto it = mHandlerMaps[i].find(hId);
+			if(it != mHandlerMaps[i].end())
+			{
+				mHandlerMaps[i].erase(it);
+				retval = std::error_condition();
+				break;
+			}
 		}
 	}
-	return RsEventsErrorNum::INVALID_HANDLER_ID;
+
+	/* At this point no *future* dispatch can pick up this handler. But an
+	 * ongoing handleEvent() may still hold a copy of it in flight (callbacks are
+	 * run outside mHandlerMapMtx). Fence on mDispatchMtx so that, once we return,
+	 * the handler is guaranteed not to be executing either: callers that
+	 * unregister from their destructor (most GUI widgets) can then be destroyed
+	 * safely. Recursive mutex => when called from within a callback on the
+	 * dispatching thread this is a cheap no-op instead of a self-deadlock. */
+	{ std::lock_guard<std::recursive_mutex> dispatchFence(mDispatchMtx); }
+
+	return retval;
 }
 
 void RsEventsService::threadTick()
@@ -180,18 +238,32 @@ void RsEventsService::handleEvent(std::shared_ptr<const RsEvent> event)
 		return;
 	}
 
-	RS_STACK_MUTEX(mHandlerMapMtx);
-	/* It is important to also call the callback under mutex protection to
-	 * ensure they are not unregistered in the meanwhile.
-	 * If a callback try to fiddle with registering/unregistering it will
-	 * deadlock */
+	/* Hold mDispatchMtx across the whole dispatch so unregisterEventsHandler()
+	 * can fence on it and guarantee a handler is not running once it returns
+	 * (see mDispatchMtx doc). Recursive: a callback re-entering on this same
+	 * thread (self-unregister or synchronous sendEvent) does not deadlock.
+	 * Safe against GUI teardown because handlers only post asynchronously (Qt
+	 * QueuedConnection) and never block waiting on the thread that unregisters,
+	 * so there is no lock-order cycle. */
+	std::lock_guard<std::recursive_mutex> dispatchLock(mDispatchMtx);
 
-	// Call all clients that registered a callback for this event type
-	for(auto cbit: mHandlerMaps[static_cast<uint32_t>(event->mType)])
-		cbit.second(event);
+	std::list<std::function<void(std::shared_ptr<const RsEvent>)> > callbacks;
+	{
+		RS_STACK_MUTEX(mHandlerMapMtx);
+		/* It is important to NOT call the callback under mHandlerMapMtx
+		 * protection to allow callbacks to send other events or unregister
+		 * themselves, which would otherwise deadlock. */
 
-	/* Also call all clients that registered with NONE, meaning that they
-	 * expect all events */
-	for(auto cbit: mHandlerMaps[static_cast<uint32_t>(RsEventType::__NONE)])
-		cbit.second(event);
+		// Call all clients that registered a callback for this event type
+		for(auto& cbit: mHandlerMaps[static_cast<uint32_t>(event->mType)])
+			callbacks.push_back(cbit.second);
+
+		/* Also call all clients that registered with NONE, meaning that they
+		 * expect all events */
+		for(auto& cbit: mHandlerMaps[static_cast<uint32_t>(RsEventType::__NONE)])
+			callbacks.push_back(cbit.second);
+	}
+
+	for(auto& cb: callbacks)
+		cb(event);
 }

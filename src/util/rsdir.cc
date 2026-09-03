@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2004-2007  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2020-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2020-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2020-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -28,15 +27,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <stdio.h>
 #include <dirent.h>
 #include <openssl/sha.h>
 #include <iomanip>
 #include <sstream>
-#include <fstream>
 #include <stdexcept>
 
+#include "util/rsdebug.h"
 #include "util/rsdir.h"
 #include "util/rsstring.h"
 #include "util/rsrandom.h"
@@ -45,7 +45,6 @@
 #include "util/rsmemory.h"
 #include "util/folderiterator.h"
 #include "retroshare/rstypes.h"
-#include "retroshare/rsnotify.h"
 #include "util/rsthreads.h"
 #include "util/largefile_retrocompat.hpp"
 
@@ -53,6 +52,7 @@
 #include "util/rsstring.h"
 #include "wtypes.h"
 #include <winioctl.h>
+#include <io.h>
 #else
 #include <errno.h>
 #endif
@@ -521,8 +521,16 @@ bool RsDirUtil::checkDirectory(const std::string& dir)
 	int val;
 	mode_t st_mode;
 #ifdef WINDOWS_SYS
+	std::string fixed = dir;
 	std::wstring wdir;
-	librs::util::ConvertUtf8ToUtf16(dir, wdir);
+	// mingw64 _wstat fails when the directory name has trailing slash or backslash: we remove them
+	while (!fixed.empty() && (fixed.back() == '\\' || fixed.back() == '/'))
+		fixed.pop_back();
+	// Restore separator for Windows drive roots: "C:" alone means the
+	// current working directory on drive C, not the root of the drive.
+	if (fixed.size() == 2 && fixed[1] == ':' && isalpha(fixed[0]))
+		fixed += '\\';
+	librs::util::ConvertUtf8ToUtf16(fixed, wdir);
 	struct _stat buf;
 	val = _wstat(wdir.c_str(), &buf);
 	st_mode = buf.st_mode;
@@ -613,8 +621,15 @@ std::string RsDirUtil::removeSymLinks(const std::string& path)
     return path ;
 #else
     char *tmp = canonicalize_file_name(path.c_str()) ;
-    std::string result(tmp) ;
 
+    if(tmp == nullptr)
+    {
+        RS_WARN("removeSymLinks: cannot resolve \"", path,
+                "\". Broken or circular symlink?");
+        return std::string();
+    }
+
+    std::string result(tmp) ;
     free(tmp);
     return result ;
 #endif
@@ -882,7 +897,25 @@ FILE *RsDirUtil::rs_fopen(const char* filename, const char* mode)
 	std::wstring wmode;
 	librs::util::ConvertUtf8ToUtf16(mode, wmode);
 
-	return _wfopen(wfilename.c_str(), wmode.c_str());
+	FILE *f = _wfopen(wfilename.c_str(), wmode.c_str());
+
+	if(f)
+	{
+		// Attempt to set sparse flag
+		int fd = _fileno(f);
+		HANDLE hChunkFile = (HANDLE) _get_osfhandle(fd);
+
+		if (hChunkFile != INVALID_HANDLE_VALUE)
+		{
+			DWORD dwTemp;
+			if (!DeviceIoControl(hChunkFile, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &dwTemp, NULL))
+			{
+				// Warn but don't fail, as it might just be a filesystem not supporting it (e.g. FAT32)
+				RsDbg() << "FILESYSTEM RsDirUtil::rs_fopen: Warning: Failed to set sparse flag for " << filename << ". Error: " << GetLastError();
+			}
+		}
+	}
+	return f;
 #else
 	return fopen64(filename, mode);
 #endif

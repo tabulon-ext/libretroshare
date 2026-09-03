@@ -3,8 +3,7 @@
  *                                                                             *
  * libretroshare: retroshare core library                                      *
  *                                                                             *
- * Copyright (C) 2019-2020  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2020  Asociación Civil Altermundi <info@altermundi.net>       *
+ * Copyright (C) 2019-2020  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -26,6 +25,7 @@
 #include <cstdint>
 #include <deque>
 #include <array>
+#include <mutex>
 
 #include "retroshare/rsevents.h"
 #include "util/rsthreads.h"
@@ -36,10 +36,12 @@ class RsEventsService :
 {
 public:
 	RsEventsService():
-	    mHandlerMapMtx("RsEventsService::mHandlerMapMtx"), mLastHandlerId(1),
-	    mEventQueueMtx("RsEventsService::mEventQueueMtx") {}
+        mHandlerMapMtx("RsEventsService::mHandlerMapMtx"),
+        mLastHandlerId(1),
+        mHandlerMaps(static_cast<std::size_t>(RsEventType::__MAX)),
+        mEventQueueMtx("RsEventsService::mEventQueueMtx")  {}
 
-	/// @see RsEvents
+    /// @see RsEvents
 	std::error_condition postEvent(
 	        std::shared_ptr<const RsEvent> event ) override;
 
@@ -50,7 +52,10 @@ public:
 	/// @see RsEvents
 	RsEventsHandlerId_t generateUniqueHandlerId() override;
 
-	/// @see RsEvents
+    /// @see RsEvents
+    RsEventType getDynamicEventType(const std::string& unique_service_identifier) override;
+
+    /// @see RsEvents
 	std::error_condition registerEventsHandler(
 	        std::function<void(std::shared_ptr<const RsEvent>)> multiCallback,
 	        RsEventsHandlerId_t& hId = RS_DEFAULT_STORAGE_PARAM(RsEventsHandlerId_t, 0),
@@ -65,16 +70,32 @@ protected:
 	std::error_condition isEventInvalid(std::shared_ptr<const RsEvent> event);
 
 	RsMutex mHandlerMapMtx;
+
+	/** Held by handleEvent() for the whole duration of the callbacks dispatch
+	 * loop, so that unregisterEventsHandler() can act as a barrier: after it
+	 * returns, the removed handler is guaranteed to be neither running nor about
+	 * to start. Without this, unregister only removes the handler from the map,
+	 * but handleEvent() runs callbacks on a *copy* taken outside mHandlerMapMtx
+	 * (on purpose, to let callbacks re-enter), so a callback whose owner is
+	 * being destroyed on another thread could still fire against a dangling
+	 * object -> use-after-free (typically a SIGSEGV in qobject_cast<QThread*>
+	 * inside RsQThreadUtils::postToObject at shutdown). Recursive so that a
+	 * callback re-entering (self-unregister or synchronous sendEvent) on the
+	 * dispatching thread does not deadlock. */
+	std::recursive_mutex mDispatchMtx;
+
 	RsEventsHandlerId_t mLastHandlerId;
 
 	/** Storage for event handlers, keep 10 extra types for plugins that might
 	 * be released indipendently */
-	std::array<
+    std::vector<
 	    std::map<
 	        RsEventsHandlerId_t,
-	        std::function<void(std::shared_ptr<const RsEvent>)> >,
-	    static_cast<std::size_t>(RsEventType::__MAX) + 10
+            std::function<void(std::shared_ptr<const RsEvent>)> >
 	> mHandlerMaps;
+
+    /** Extra event types registered by plugins */
+    std::map<std::string,RsEventType> mRegisteredExtraEventTypes;
 
 	RsMutex mEventQueueMtx;
 	std::deque< std::shared_ptr<const RsEvent> > mEventQueue;

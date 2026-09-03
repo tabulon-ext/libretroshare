@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012  Christopher Evi-Parker                                  *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -3750,7 +3749,7 @@ bool RsGxsNetService::encryptSingleNxsItem(RsNxsItem *item, const RsGxsCircleId&
 
 	if(!mCircles->recipients(destination_circle,destination_group,recipients))
 	{
-		std::cerr << "  (EE) Cannot encrypt transaction: recipients list not available. Should re-try later." << std::endl;
+		RsWarn() << "Cannot encrypt transaction: recipients list not available for circle " << destination_circle << ". Will re-try later." ;
         	status = RS_NXS_ITEM_ENCRYPTION_STATUS_CIRCLE_ERROR ;
 		return false ;
 	}

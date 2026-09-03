@@ -134,8 +134,8 @@ PUBLIC_HEADERS =	retroshare/rsdisc.h \
 					retroshare/rsiface.h \
 					retroshare/rsinit.h \
 					retroshare/rsplugin.h \
-					retroshare/rsmsgs.h \
-					retroshare/rsnotify.h \
+                                        retroshare/rschats.h \
+                                        retroshare/rsmail.h \
 					retroshare/rspeers.h \
 					retroshare/rsstatus.h \
 					retroshare/rsturtle.h \
@@ -407,7 +407,6 @@ HEADERS +=	pqi/authssl.h \
 			pqi/p3peermgr.h \
 			pqi/p3linkmgr.h \
 			pqi/p3netmgr.h \
-			pqi/p3notify.h \
 			pqi/p3upnpmgr.h \
 			pqi/pqiqos.h \
 			pqi/pqi.h \
@@ -442,7 +441,7 @@ HEADERS +=	pqi/authssl.h \
 
 HEADERS +=	rsserver/p3face.h \
 			rsserver/p3history.h \
-			rsserver/p3msgs.h \
+#			rsserver/p3msgs.h \
 			rsserver/p3peers.h \
 			rsserver/p3status.h \
 			rsserver/rsaccounts.h \
@@ -587,7 +586,6 @@ SOURCES +=	pqi/authgpg.cc \
 			pqi/pqifdbin.cc \
 			pqi/rstcpsocket.cc \
 			pqi/p3netmgr.cc \
-			pqi/p3notify.cc \
 			pqi/pqiqos.cc \
 			pqi/pqibin.cc \
 			pqi/pqihandler.cc \
@@ -616,7 +614,7 @@ SOURCES += 		rsserver/p3face-config.cc \
 			rsserver/p3face-server.cc \
 			rsserver/p3face-info.cc \
 			rsserver/p3history.cc \
-			rsserver/p3msgs.cc \
+#			rsserver/p3msgs.cc \
 			rsserver/p3peers.cc \
 			rsserver/p3status.cc \
 			rsserver/rsinit.cc \
@@ -856,7 +854,19 @@ HEADERS += retroshare/rsgxschannels.h \
 SOURCES += services/p3gxschannels.cc \
 	services/p3gxscommon.cc \
 	rsitems/rsgxscommentitems.cc \
-	rsitems/rsgxschannelitems.cc \
+	rsitems/rsgxschannelitems.cc
+
+# GxsCalendar Service
+gxscalendar {
+	DEFINES *= RS_USE_CALENDAR
+
+	HEADERS += retroshare/rsgxscalendar.h \
+		services/p3gxscalendar.h \
+		rsitems/rsgxscalendaritems.h
+
+	SOURCES += services/p3gxscalendar.cc \
+		rsitems/rsgxscalendaritems.cc
+}
 
 wikipoos {
 	DEFINES *= RS_USE_WIKI
@@ -1019,9 +1029,14 @@ rs_jsonapi {
     genjsonapi.clean = $${WRAPPERS_INCL_FILE} $${WRAPPERS_REG_FILE}
     genjsonapi.CONFIG += target_predeps combine no_link
     genjsonapi.variable_out = HEADERS
+    # Doxygen never purges its output directory, and the generator emits one
+    # #include per *_8h.xml file it finds there. Without removing them first, the
+    # XML of a public header that has been removed or renamed survives forever and
+    # keeps being turned into an #include of a file that no longer exists.
     win32-g++:isEmpty(QMAKE_SH) {
         genjsonapi.commands = \
             $(CHK_DIR_EXISTS) $$shell_path($$JSONAPI_GENERATOR_OUT) $(MKDIR) $$shell_path($${JSONAPI_GENERATOR_OUT}) $$escape_expand(\\n\\t) \
+            -$(DEL_FILE) $$shell_path($${JSONAPI_GENERATOR_OUT}/xml/*_8h.xml) $$escape_expand(\\n\\t) \
             $(COPY_FILE) $$shell_path($${DOXIGEN_CONFIG_SRC}) $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
             echo OUTPUT_DIRECTORY=$${JSONAPI_GENERATOR_OUT} >> $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
             echo INPUT=$${DOXIGEN_INPUT_DIRECTORY} >> $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
@@ -1029,6 +1044,7 @@ rs_jsonapi {
     } else {
         genjsonapi.commands = \
             mkdir -p $${JSONAPI_GENERATOR_OUT} && \
+            rm -f $${JSONAPI_GENERATOR_OUT}/xml/*_8h.xml && \
             cp $${DOXIGEN_CONFIG_SRC} $${DOXIGEN_CONFIG_OUT} && \
             echo OUTPUT_DIRECTORY=$${JSONAPI_GENERATOR_OUT} >> $${DOXIGEN_CONFIG_OUT} && \
             echo INPUT=$${DOXIGEN_INPUT_DIRECTORY} >> $${DOXIGEN_CONFIG_OUT} && \
@@ -1351,3 +1367,15 @@ android-* {
         rs_android/errorconditionwrap.cpp
 }
 
+# --- [Added] Engine Versioning ---
+# We use 'git -C $$PWD' to ensure we retrieve the hash/tag of the submodule (libretroshare)
+LIB_GIT_HASH = $$system(git -C $$PWD describe --tags --always --dirty)
+
+# [Fix] Remove the leading 'v' if present (e.g. v0.6.7 -> 0.6.7) to match GUI style
+LIB_GIT_HASH ~= s/^v//
+
+!isEmpty(LIB_GIT_HASH) {
+    DEFINES += RS_LIB_VERSION_HASH=\\\"$$LIB_GIT_HASH\\\"
+} else {
+    DEFINES += RS_LIB_VERSION_HASH=\\\"[version not available]\\\"
+}

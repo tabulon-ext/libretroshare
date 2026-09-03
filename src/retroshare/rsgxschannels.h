@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012  Robert Fernie <retroshare@lunamutt.com>                 *
- * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2020  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2020  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -120,6 +119,15 @@ struct RsGxsChannelPost : RsSerializable, RsGxsGenericMsgData
 	}
 
 	~RsGxsChannelPost() override;
+
+	/* Posts are held in vectors that get grown, sorted and handed over between
+	 * layers. Without these the user declared destructor above suppresses the
+	 * implicit move operations and every one of those operations deep copies
+	 * the thumbnail. @see RsGxsImage */
+	RsGxsChannelPost(const RsGxsChannelPost&) = default;
+	RsGxsChannelPost& operator=(const RsGxsChannelPost&) = default;
+	RsGxsChannelPost(RsGxsChannelPost&&) = default;
+	RsGxsChannelPost& operator=(RsGxsChannelPost&&) = default;
 };
 
 
@@ -430,6 +438,22 @@ public:
      * @return false on error, true otherwise
      */
     virtual bool setMessageReadStatus(const RsGxsGrpMsgIdPair &msgId, bool read) =0;
+
+    /**
+     * @brief Mark several messages of a channel read/unread in one batch. Blocking.
+     *
+     * Like setMessageReadStatus() but queues all the status changes at once: they
+     * are persisted in a single database transaction and only one event is
+     * emitted, so it stays cheap even for thousands of posts and is meant to be
+     * called from a background thread so the GUI never blocks.
+     * @param[in] channelId channel group identifier
+     * @param[in] msgIds     identifiers of the posts to update
+     * @param[in] read       true to mark as read, false to mark as unread
+     * @return false on error, true otherwise
+     */
+    virtual bool setMessageReadStatus( const RsGxsGroupId& channelId,
+                                       const std::vector<RsGxsMessageId>& msgIds,
+                                       bool read ) =0;
 
     /**
 	 * @brief Share channel publishing key

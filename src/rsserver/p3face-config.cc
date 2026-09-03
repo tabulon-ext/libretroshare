@@ -84,8 +84,35 @@ void RsServer::rsGlobalShutDown()
 	bool wasReady = coreReady;
 	coreReady = false;
 
+#ifdef RS_JSONAPI
+	/* Stop the JSON API before anything else. Plugins delete their
+	 * JsonApiResourceProvider in stopPlugins() below, while the restbed service
+	 * still holds the resources that provider handed out -- their handlers
+	 * capture it, so serving a request in that window dereferences freed
+	 * memory. The window is not small: everything between stopPlugins() and the
+	 * end of this function can take tens of seconds, and a web interface polls
+	 * throughout. Stopping first also keeps an API client from touching the
+	 * configuration after ConfigFinalSave().
+	 *
+	 * Not inside the wasReady branch: retroshare-service and Android start the
+	 * JSON API before login, so a shutdown from that state must stop it too. */
+	if(rsJsonApi) rsJsonApi->fullstop();
+#endif
+
 	if(wasReady)
 	{
+		/* Close the incoming-connection listener FIRST, before anything else.
+		 * The steps below (config save, plugin stop, UPnP teardown and above all
+		 * the auto-proxy shutdown) can take >20s, during which the RsServer tick
+		 * thread is still alive and keeps ticking the listener. Left open, it goes
+		 * on accepting TCP connections and completing full SSL+PGP handshakes right
+		 * up to the last second before the databases close -- creating per-peer
+		 * state (sockets, streamer threads) that races the teardown of the static
+		 * SmallObject allocator. Closing the accept socket now admits no new peer
+		 * for the whole shutdown; fullstopAllThreads() below then drains the
+		 * already-connected ones. */
+		if(pqih) pqih->stopListener();
+
 		// save configuration before exit
 		ConfigFinalSave();
 
@@ -103,9 +130,13 @@ void RsServer::rsGlobalShutDown()
 
 	fullstop();
 
-#ifdef RS_JSONAPI
-	rsJsonApi->fullstop();
-#endif
+	/* Stop the per-peer network I/O threads (pqithreadstreamer). They are
+	 * otherwise never stopped at shutdown and keep deserialising incoming
+	 * packets, which crashes/floods the log once the static SmallObject
+	 * allocator and its mutex are destroyed during process teardown.
+	 * Must run after fullstop() so the RsServer tick thread is no longer
+	 * iterating the peer list concurrently. */
+	if(pqih) pqih->fullstopAllThreads();
 
 	AuthPGP::exit();
 

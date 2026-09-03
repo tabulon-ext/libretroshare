@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2007-2011  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2015-2019  Gioacchino Mazzurco <gio@eigenlab.org>             *
+ * Copyright (C) 2015-2019  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -1069,7 +1069,14 @@ bool p3PeerMgrIMPL::addFriend(const RsPeerId& input_id, const RsPgpId& input_gpg
 		mLinkMgr->addFriend(id, vs_dht != RS_VS_DHT_OFF);
 	}
 
-	service_flags &= servicePermissionFlags(gpg_id) ; // Always reduce the permissions.
+	{
+		RS_STACK_MUTEX(mPeerMtx);
+		auto it = mFriendsPermissionFlags.find(gpg_id);
+		if(it != mFriendsPermissionFlags.end())
+		{
+			service_flags &= it->second; // Always reduce the permissions for existing friends.
+		}
+	}
 #ifdef RS_CHATSERVER //Defined by chatserver
 	setServicePermissionFlags(gpg_id,RS_NODE_PERM_NONE) ;
 #else
@@ -1178,6 +1185,19 @@ bool p3PeerMgrIMPL::addSslOnlyFriend( const RsPeerId& sslId, const RsPgpId& pgp_
 	{ RS_STACK_MUTEX(mPeerMtx);
 		mFriendList[sslId] = pstate;
 		mStatusChanged = true;
+
+		/* Establish default (empty) service permissions for this PGP id if none
+		 * exist yet. This is essential: addSslOnlyFriend() is the entry point
+		 * used by short invites (webui, mobile, QR code...) and, unlike
+		 * addFriend(), it would otherwise leave mFriendsPermissionFlags without
+		 * an entry for this friend. Later on, gossip discovery and loadList call
+		 * addFriend() with the RS_NODE_PERM_ALL "keep the existing flags" mask,
+		 * relying on the per-friend entry to reduce it (service_flags &= entry).
+		 * With no entry that mask is written verbatim, silently granting the peer
+		 * DIRECT_DL | ALLOW_PUSH | REQUIRE_WL. Registering RS_NODE_PERM_NONE here
+		 * makes the mask a no-op and matches the default of GUI-added friends. */
+		if(mFriendsPermissionFlags.find(pgp_id) == mFriendsPermissionFlags.end())
+			mFriendsPermissionFlags[pgp_id] = RS_NODE_PERM_NONE;
 	} // RS_STACK_MUTEX(mPeerMtx);
 
     IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW);
@@ -1789,6 +1809,9 @@ bool p3PeerMgrIMPL::addCandidateForOwnExternalAddress(const RsPeerId &from, cons
     //	- remove old values for that same peer
     //	- remove values for non connected peers
 
+    sockaddr_storage current_best_ext_address_guess ;
+    bool have_ext_address = false;
+
     {
 	    RsStackMutex stack(mPeerMtx); /****** STACK LOCK MUTEX *******/
 
@@ -1805,13 +1828,16 @@ bool p3PeerMgrIMPL::addCandidateForOwnExternalAddress(const RsPeerId &from, cons
 	    else
 		    ++it ;
 
-	    sockaddr_storage current_best_ext_address_guess ;
 	    uint32_t count ;
 
-	    locked_computeCurrentBestOwnExtAddressCandidate(current_best_ext_address_guess,count) ;
+        if(locked_computeCurrentBestOwnExtAddressCandidate(current_best_ext_address_guess,count))
+            have_ext_address = true;
 
 	    std::cerr << "p3PeerMgr::  Current external address is calculated to be: " << sockaddr_storage_iptostring(current_best_ext_address_guess) << " (simultaneously reported by " << count << " peers)." << std::endl;
     }
+
+    if(have_ext_address)
+        mNetMgr->setExtAddress(current_best_ext_address_guess);	// setExtAddress will only send an event if the address actually changed.
 
     // now current
 
@@ -1840,11 +1866,11 @@ bool p3PeerMgrIMPL::addCandidateForOwnExternalAddress(const RsPeerId &from, cons
 
 		if(rsEvents)
 		{
-			auto ev = std::make_shared<RsConnectionEvent>();
+            auto ev = std::make_shared<RsFriendListEvent>();
 			ev->mSslId = from;
 			ev->mOwnLocator = RsUrl(own_addr);
 			ev->mReportedLocator = RsUrl(addr);
-			ev->mConnectionInfoCode = RsConnectionEventCode::PEER_REPORTS_WRONG_IP;
+            ev->mEventCode = RsFriendListEventCode::NODE_REPORTS_WRONG_IP;
 			rsEvents->postEvent(ev);
 		}
 	}
@@ -2697,7 +2723,7 @@ bool  p3PeerMgrIMPL::loadList(std::list<RsItem *>& load)
 
         // Also filter out profiles in groups that are not friends. Normally this shouldn't be needed, but it's a precaution
 
-        for(auto group_pair:groupList)
+        for(auto& group_pair:groupList)
         {
             for(auto profileIdIt(group_pair.second.peerIds.begin());profileIdIt!=group_pair.second.peerIds.end();)
                 if(AuthPGP::isPGPAccepted(*profileIdIt) || *profileIdIt == AuthPGP::getPgpOwnId())
@@ -2803,7 +2829,12 @@ bool p3PeerMgrIMPL::addGroup(RsGroupInfo &groupInfo)
         std::cerr << "(II) Added new group with ID " << groupInfo.id << ", name=\"" << groupInfo.name << "\"" << std::endl;
 	}
 
-	RsServer::notify()->notifyListChange(NOTIFY_LIST_GROUPLIST, NOTIFY_TYPE_ADD);
+    if(rsEvents)
+    {
+        auto e = std::make_shared<RsFriendListEvent>();
+        e->mEventCode = RsFriendListEventCode::GROUP_ADDED ;
+        rsEvents->postEvent(e);
+    }
 
     IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 
@@ -2843,10 +2874,15 @@ bool p3PeerMgrIMPL::editGroup(const RsNodeGroupId& groupId, RsGroupInfo &groupIn
 
     if (changed)
     {
-		RsServer::notify()->notifyListChange(NOTIFY_LIST_GROUPLIST, NOTIFY_TYPE_MOD);
+        if(rsEvents)
+        {
+            auto e = std::make_shared<RsFriendListEvent>();
+            e->mEventCode = RsFriendListEventCode::GROUP_CHANGED ;
+            rsEvents->postEvent(e);
+        }
 
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
-	}
+    }
 
 	return changed;
 }
@@ -2884,9 +2920,14 @@ bool p3PeerMgrIMPL::removeGroup(const RsNodeGroupId& groupId)
 		}
 	}
 
-	if (changed) {
-		RsServer::notify()->notifyListChange(NOTIFY_LIST_GROUPLIST, NOTIFY_TYPE_DEL);
-
+    if (changed)
+    {
+        if(rsEvents)
+        {
+            auto e = std::make_shared<RsFriendListEvent>();
+            e->mEventCode = RsFriendListEventCode::GROUP_REMOVED ;
+            rsEvents->postEvent(e);
+        }
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 	}
 
@@ -2972,9 +3013,14 @@ bool p3PeerMgrIMPL::assignPeersToGroup(const RsNodeGroupId &groupId, const std::
 			}
 	}
 
-	if (changed) {
-		RsServer::notify()->notifyListChange(NOTIFY_LIST_GROUPLIST, NOTIFY_TYPE_MOD);
-
+    if (changed)
+    {
+        if(rsEvents)
+        {
+            auto e = std::make_shared<RsFriendListEvent>();
+            e->mEventCode = RsFriendListEventCode::GROUP_CHANGED ;
+            rsEvents->postEvent(e);
+        }
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 	}
 

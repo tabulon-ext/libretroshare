@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012-2014  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -124,6 +123,11 @@ public:
 
 	/// @see RsGxsForums::markRead
     virtual bool markRead(const RsGxsGrpMsgIdPair& messageId, bool read) override;
+
+	/// @see RsGxsForums::markRead (batch variant)
+    virtual bool markRead( const RsGxsGroupId& forumId,
+                           const std::vector<RsGxsMessageId>& msgIds,
+                           bool read ) override;
 
     /// @see RsGxsForums::updateReputationLevel
     virtual void updateReputationLevel(uint32_t forum_group_sign_flags,ForumPostEntry& e) const override;

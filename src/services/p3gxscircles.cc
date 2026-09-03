@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012-2014  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2018-2019  Gioacchino Mazzurco <gio@eigenlab.org>             *
+ * Copyright (C) 2018-2019  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -710,7 +710,6 @@ void p3GxsCircles::notifyChanges(std::vector<RsGxsNotify *> &changes)
 	std::cerr << std::endl;
 #endif
 
-	//p3Notify *notify = RsServer::notify();
 	std::set<RsGxsCircleId> circles_to_reload;
 
 	for(auto it = changes.begin(); it != changes.end(); ++it)

@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2007-2008 Robert Fernie <retroshare@lunamutt.com>             *
- * Copyright (C) 2019  Gioacchino Mazzurco <gio@eigenlab.org>                  *
+ * Copyright (C) 2019  Gioacchino Mazzurco <gio@retroshare.cc>                  *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -68,11 +68,17 @@ enum class RsServiceType : uint16_t
 	/// not gxs, but used with identities.
 	REPUTATION                 = 0x0219,
 	GXS_RECOGN                 = 0x0220,
+#ifdef RS_USE_CALENDAR
+	CALENDAR                   = 0x0221,
+#endif
 	GXS_TRANS                  = 0x0230,
 	JSONAPI                    = 0x0240,
 	FORUMS_CONFIG              = 0x0315,
 	POSTED_CONFIG              = 0x0316,
 	CHANNELS_CONFIG            = 0x0317,
+#ifdef RS_USE_CALENDAR
+	CALENDAR_CONFIG            = 0x0321,
+#endif
 	RTT                        = 0x1011, /// Round Trip Time
 
 	PLUGIN_ARADO_ID            = 0x2001,

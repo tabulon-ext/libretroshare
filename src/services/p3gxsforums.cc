@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012-2014  Robert Fernie <retroshare@lunamutt.com>            *
- * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2018-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -31,7 +30,6 @@
 #include "retroshare/rsidentity.h"
 #include "util/rsdebug.h"
 #include "rsserver/p3face.h"
-#include "retroshare/rsnotify.h"
 #include "util/rsdebuglevel2.h"
 #include "retroshare/rsgxsflags.h"
 
@@ -288,8 +286,27 @@ void p3GxsForums::notifyChanges(std::vector<RsGxsNotify*>& changes)
 			}
 			break;
 		}
-		case RsGxsNotify::TYPE_PROCESSED: // happens when the group is subscribed
+		case RsGxsNotify::TYPE_PROCESSED:
 		{
+			/* TYPE_PROCESSED is emitted for two unrelated things:
+			 *
+			 *  - a *group* meta change (RsGenExchange::processGrpMetaChanges),
+			 *    which for forums means the subscription status changed;
+			 *  - a *message* meta change (RsGenExchange::processMsgMetaChanges),
+			 *    i.e. a read/unread or keep-forever status change.
+			 *
+			 * Unlike the other services, which only look at TYPE_PROCESSED
+			 * inside their group change branch, this switch is on the raw
+			 * notification type, so every single post marked read or unread was
+			 * reported to the clients as a subscription change. The GUI reacts
+			 * to that by reloading the whole forum list and recomputing the
+			 * statistics of *every* subscribed forum, which is why toggling the
+			 * read status of one post in a large forum froze the interface for
+			 * seconds. Read status changes are already notified by
+			 * setMessageReadStatus() and markRead(). */
+			if(dynamic_cast<RsGxsMsgChange*>(gxsChange))
+				break;
+
 			auto ev = std::make_shared<RsGxsForumEvent>();
 			ev->mForumGroupId = gxsChange->mGroupId;
 			ev->mForumEventCode = RsForumEventCode::SUBSCRIBE_STATUS_CHANGED;
@@ -897,6 +914,51 @@ bool p3GxsForums::markRead(const RsGxsGrpMsgIdPair& msgId, bool read)
 	return true;
 }
 
+bool p3GxsForums::markRead(const RsGxsGroupId& forumId, const std::vector<RsGxsMessageId>& msgIds, bool read)
+{
+	if(msgIds.empty())
+		return true;
+
+	uint32_t mask   = GXS_SERV::GXS_MSG_STATUS_GUI_NEW | GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
+	uint32_t status = read ? 0 : GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
+
+	// Queue every status change at once. They all land in mMsgLocMetaMap and are
+	// drained together by a single processMsgMetaChanges() tick, which persists
+	// them in one DB transaction. This is what keeps "mark all as read" cheap
+	// instead of one blocking request (and one detached thread) per message.
+	std::vector<uint32_t> tokens;
+	tokens.reserve(msgIds.size());
+
+	for(const RsGxsMessageId& msgId : msgIds)
+	{
+		uint32_t token;
+		setMsgStatusFlags(token, RsGxsGrpMsgIdPair(forumId, msgId), status, mask);
+		tokens.push_back(token);
+	}
+
+	// Wait for the whole batch to be processed. They all normally complete in
+	// the same tick, but do not rely on the completion order: wait on every
+	// token. All the waits after the first completed one return immediately.
+	for(uint32_t token : tokens)
+		waitToken(token, std::chrono::milliseconds(30000));
+
+	RsGxsGrpMsgIdPair p;
+	for(uint32_t token : tokens)
+		acknowledgeMsg(token, p);
+
+	// A single event for the whole batch (the per-message event storm was part
+	// of what froze the UI). Consumers only use the group id to refresh counts.
+	if(rsEvents)
+	{
+		auto ev = std::make_shared<RsGxsForumEvent>();
+		ev->mForumGroupId   = forumId;
+		ev->mForumEventCode = RsForumEventCode::READ_STATUS_CHANGED;
+		rsEvents->postEvent(ev);
+	}
+
+	return true;
+}
+
 bool p3GxsForums::subscribeToForum(const RsGxsGroupId& groupId, bool subscribe )
 {
 	uint32_t token;
@@ -1060,6 +1122,25 @@ bool p3GxsForums::getForumGroupStatistics(const RsGxsGroupId& ForumId,GxsGroupSt
 
 bool p3GxsForums::getForumStatistics(const RsGxsGroupId& forumId,RsGxsForumStatistics& stat)
 {
+    // NOTE: this rebuilds the whole post hierarchy just to increment three
+    // counters, which is expensive on a large forum. It cannot be replaced by
+    // the generic RsGxsDataAccess::getGroupStatistic(): that one collapses post
+    // versions with
+    //
+    //     if(!mOrigMsgId.isNull() && mOrigMsgId != mMsgId) obsolete.insert(mOrigMsgId)
+    //
+    // which only ever marks the *original* message obsolete. Every edit of a
+    // post carries mOrigMsgId = the original, so a post edited N times is
+    // counted N times instead of once, and superseded versions that were never
+    // displayed keep their unread flag forever. computeMessagesHierarchy() below
+    // does it properly: it groups the versions, merges chains, checks that the
+    // editor is the original author or a moderator, and keeps only the most
+    // recent one.
+    //
+    // Making this cheap means factoring that version collapsing out of
+    // computeMessagesHierarchy() so both share it -- not reimplementing the rule
+    // a second time.
+
     // 1 - get group data
 
     std::vector<RsGxsForumGroup> groups;

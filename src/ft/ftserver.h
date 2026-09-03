@@ -207,6 +207,9 @@ public:
     virtual void setFilePermDirectDL(uint32_t perm)  override;
     virtual uint32_t filePermDirectDL()  override;
 
+    virtual void setUploadStatsRetentionDays(int days) override;
+    virtual int getUploadStatsRetentionDays() override;
+
 	/// @see RsFiles
 	std::error_condition requestFiles(
 	        const RsFileTree& collection,
@@ -363,6 +366,11 @@ public:
 
     bool encryptItem(RsTurtleGenericTunnelItem *clear_item,const RsFileHash& hash,RsTurtleGenericDataItem *& encrypted_item);
     bool decryptItem(const RsTurtleGenericDataItem *encrypted_item, const RsFileHash& hash, RsTurtleGenericTunnelItem *&decrypted_item);
+
+	virtual uint64_t getCumulativeUpload(RsFileHash hash);
+	virtual uint64_t getCumulativeUploadAll();
+	virtual uint64_t getCumulativeUploadNum();
+	virtual void clearUploadStats();
 
     /*************** Internal Transfer Fns *************************/
     virtual int tick();

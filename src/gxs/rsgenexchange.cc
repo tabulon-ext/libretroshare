@@ -4,8 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2012  Christopher Evi-Parker                                  *
- * Copyright (C) 2019-2021  Gioacchino Mazzurco <gio@eigenlab.org>             *
- * Copyright (C) 2019-2021  Asociación Civil Altermundi <info@altermundi.net>  *
+ * Copyright (C) 2019-2021  Gioacchino Mazzurco <gio@retroshare.cc>             *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -1114,10 +1113,42 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
     }
 
     if(idValidate)
+	{
+		// Validate admin signature
+		RsTlvSecurityKeySet keys = metaData.keys;
+		GxsSecurity::createPublicKeysFromPrivateKeys(keys);
+		std::map<RsGxsId, RsTlvPublicRSAKey>& public_keys = keys.public_keys;
+		std::map<RsGxsId, RsTlvPublicRSAKey>::iterator keyMit = public_keys.find(RsGxsId(metaData.mGroupId));
+	
+		if(keyMit == public_keys.end())
+		{
+#ifdef GEN_EXCH_DEBUG
+			std::cerr << "RsGenExchange::validateGrp() admin key not found! " << std::endl;
+#endif
+			return VALIDATE_FAIL;
+		}
+	
+		std::map<SignType, RsTlvKeySignature>& signSet = metaData.signSet.keySignSet;
+		std::map<SignType, RsTlvKeySignature>::iterator mit = signSet.find(INDEX_AUTHEN_ADMIN);
+		if(mit == signSet.end())
+		{
+#ifdef GEN_EXCH_DEBUG
+			std::cerr << "RsGenExchange::validateGrp() admin sign not found! " << std::endl;
+			std::cerr << "RsGenExchange::validateGrp() grpId: " << metaData.mGroupId << std::endl;
+#endif
+			return VALIDATE_FAIL;
+		}
+		RsTlvKeySignature adminSign = mit->second;
+		if (!GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second))
+		{
+			return VALIDATE_FAIL;
+		}
 	    return VALIDATE_SUCCESS;
+	}
     else
+	{
 	    return VALIDATE_FAIL;
-
+	}
 }
 
 bool RsGenExchange::checkAuthenFlag(const PrivacyBitPos& pos, const uint8_t& flag) const
@@ -1538,6 +1569,7 @@ bool RsGenExchange::getGroupData(const uint32_t &token, std::vector<RsGxsGrpItem
 bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 {
 	RS_STACK_MUTEX(mGenMtx) ;
+
 	NxsMsgDataResult msgResult;
 	bool ok = mDataAccess->getMsgData(token, msgResult);
 
@@ -1582,6 +1614,7 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 			}
 		}
 	}
+
 	return ok;
 }
 
@@ -2062,6 +2095,18 @@ void RsGenExchange::processMsgMetaChanges()
 
     GxsMsgReq msgIds;
 
+    // First pass: resolve the status masks into absolute values (reads come from
+    // the in-memory meta cache, so this stays cheap even for thousands of
+    // messages) and collect every change so they can be persisted together in a
+    // single DB transaction below, instead of one fsync'd write per message.
+    std::vector<MsgLocMetaData> updates;
+    updates.reserve(metaMap.size());
+
+    std::vector<std::pair<uint32_t, RsGxsGrpMsgIdPair> > tokenIds;
+    tokenIds.reserve(metaMap.size());
+
+    std::set<uint32_t> failedTokens;
+
     std::map<uint32_t, MsgLocMetaData>::iterator mit;
     for (mit = metaMap.begin(); mit != metaMap.end(); ++mit)
     {
@@ -2102,27 +2147,37 @@ void RsGenExchange::processMsgMetaChanges()
             }
         }
 
-        ok &= mDataStore->updateMessageMetaData(m) == 1;
-        uint32_t token = mit->first;
+        // The actual DB write is deferred to the single batched transaction
+        // below. Collect the resolved change and remember its token.
+        updates.push_back(m);
+        tokenIds.push_back(std::make_pair(mit->first, m.msgId));
+
+        if(!ok)
+            failedTokens.insert(mit->first);
+        else if(changed)
+            msgIds[m.msgId.first].insert(m.msgId.second);
+    }
+
+    // Second pass: persist every collected change in a single transaction.
+    int updated = mDataStore->updateMessageMetaData(updates);
+    bool batchOk = (updated == static_cast<int>(updates.size()));
+
+    for(std::vector<std::pair<uint32_t, RsGxsGrpMsgIdPair> >::iterator it = tokenIds.begin(); it != tokenIds.end(); ++it)
+    {
+        bool ok = batchOk && (failedTokens.find(it->first) == failedTokens.end());
 
         if(ok)
-        {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::COMPLETE);
-            if (changed)
-            {
-                msgIds[m.msgId.first].insert(m.msgId.second);
-            }
-        }
+            mDataAccess->updatePublicRequestStatus(it->first, RsTokenService::COMPLETE);
         else
-        {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::FAILED);
-        }
+            mDataAccess->updatePublicRequestStatus(it->first, RsTokenService::FAILED);
 
-        {
-            RS_STACK_MUTEX(mGenMtx);
-            mMsgNotify.insert(std::make_pair(token, m.msgId));
-        }
+        RS_STACK_MUTEX(mGenMtx);
+        mMsgNotify.insert(std::make_pair(it->first, it->second));
     }
+
+    // If the whole batch failed, don't emit change notifications for it.
+    if(!batchOk)
+        msgIds.clear();
 
     if (!msgIds.empty())
     {
@@ -2150,6 +2205,13 @@ void RsGenExchange::processGrpMetaChanges()
 
     std::list<RsGxsGroupId> grpChanged;
 
+    // Phase 1: process the masks, and collect the entries to write.
+
+    std::vector<GrpLocMetaData> toWrite;
+    std::vector<uint32_t> writeTokens;
+    toWrite.reserve(metaMap.size());
+    writeTokens.reserve(metaMap.size());
+
     std::map<uint32_t, GrpLocMetaData>::iterator mit;
     for (mit = metaMap.begin(); mit != metaMap.end(); ++mit)
     {
@@ -2160,19 +2222,13 @@ void RsGenExchange::processGrpMetaChanges()
         RsDbg() << " Processing GrpMetaChange for token " << token << std::endl;
 #endif
         // process mask
-        bool ok = processGrpMask(g.grpId, g.val);
-
-        ok = ok && (mDataStore->updateGroupMetaData(g) == 1);
-
-        if(ok)
+        if(processGrpMask(g.grpId, g.val))
         {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::COMPLETE);
-            grpChanged.push_back(g.grpId);
+            toWrite.push_back(g);
+            writeTokens.push_back(token);
         }
         else
-        {
             mDataAccess->updatePublicRequestStatus(token, RsTokenService::FAILED);
-        }
 
         {
             RS_STACK_MUTEX(mGenMtx);
@@ -2181,6 +2237,27 @@ void RsGenExchange::processGrpMetaChanges()
             RsDbg() << " Processing GrpMetaChange Adding token " << token << " to mGrpNotify" << std::endl;
 #endif
         }
+    }
+
+    // Phase 2: write the whole batch in a single DB transaction. One call per
+    // entry means one fsync per entry, which was measured at ~1 s each and
+    // freezes the service tick for minutes when a backlog accumulates.
+
+    if(!toWrite.empty())
+    {
+        bool all_ok = mDataStore->updateGroupMetaData(toWrite) == (int)toWrite.size();
+
+        if(!all_ok)
+            RsErr() << __PRETTY_FUNCTION__ << " some group meta updates failed in a batch of " << toWrite.size() << " entries." << std::endl;
+
+        for(uint32_t i=0;i<toWrite.size();++i)
+            if(all_ok)
+            {
+                mDataAccess->updatePublicRequestStatus(writeTokens[i], RsTokenService::COMPLETE);
+                grpChanged.push_back(toWrite[i].grpId);
+            }
+            else
+                mDataAccess->updatePublicRequestStatus(writeTokens[i], RsTokenService::FAILED);
     }
 
     for(auto& groupId:grpChanged)
@@ -2801,6 +2878,10 @@ void RsGenExchange::publishGrps()
 
 			    if(ret == SERVICE_CREATE_SUCCESS)
 			    {
+                    // MODIFICATION: Update timestamp BEFORE serialization so the payload matches the meta.
+                    // This fixes propagation issues where peers rejected the update due to stale timestamp in bin data.
+                    grpItem->meta.mPublishTs = time(NULL);
+
 				    uint32_t size = mSerialiser->size(grpItem);
 				    char *gData = new char[size];
 				    serialOk = mSerialiser->serialise(grpItem, gData, &size);
@@ -2816,7 +2897,7 @@ void RsGenExchange::publishGrps()
 			    if(serialOk && servCreateOk)
 			    {
 				    grp->metaData = new RsGxsGrpMetaData();
-				    grpItem->meta.mPublishTs = time(NULL);
+				    // grpItem->meta.mPublishTs = time(NULL); // Moved up
 				    *(grp->metaData) = grpItem->meta;
 
 				    // TODO: change when publish key optimisation added (public groups don't have publish key
@@ -3058,6 +3139,7 @@ void RsGenExchange::computeHash(const RsTlvBinaryData& data, RsFileHash& hash)
 void RsGenExchange::processRecvdMessages()
 {
     std::list<RsGxsMessageId> messages_to_reject ;
+    std::set<RsGxsGroupId> grps_with_new_msgs ;	// groups that received new messages, to stamp their server update TS off-mutex below
 
     {
 	    RS_STACK_MUTEX(mGenMtx) ;
@@ -3237,6 +3319,12 @@ void RsGenExchange::processRecvdMessages()
 
             for(auto& nxs_msg: msgs_to_store)
             {
+                // msgs_to_store is now post-deduplication (removeDeleteExistingMessages above), so this only
+                // contains genuinely new messages. Mark their groups for the server-TS stamp here, NOT from
+                // groups_last_post_update (which is populated pre-dedup and would also fire for already-known
+                // messages re-received via sync, causing redundant stamps/advertisements).
+                grps_with_new_msgs.insert(nxs_msg->grpId);
+
                 RsGxsMsgItem *item = dynamic_cast<RsGxsMsgItem*>(mSerialiser->deserialise(nxs_msg->msg.bin_data,&nxs_msg->msg.bin_len));
 
                 if(!item)
@@ -3269,8 +3357,18 @@ void RsGenExchange::processRecvdMessages()
     // Done off-mutex to avoid cross deadlocks in the netservice that might call the RsGenExchange as an observer..
 
     if(mNetService != NULL)
+    {
 	    for(std::list<RsGxsMessageId>::const_iterator it(messages_to_reject.begin());it!=messages_to_reject.end();++it)
 		    mNetService->rejectMessage(*it) ;
+
+	    // Stamp the server-side msg update TS for groups that received new messages, so that friends get
+	    // notified and re-synchronise. For messages received through the regular netservice transaction path
+	    // this is already done in RsGxsNetService::processCompletedTransactions(), but messages injected
+	    // directly via receiveNewMessages() (e.g. presigned receipts) bypass that path and would otherwise be
+	    // stored but never advertised to friends.
+	    for(const RsGxsGroupId& grpId : grps_with_new_msgs)
+		    mNetService->stampMsgServerUpdateTS(grpId) ;
+    }
 }
 
 bool RsGenExchange::acceptNewGroup(const RsGxsGrpMetaData* /*grpMeta*/ ) { return true; }

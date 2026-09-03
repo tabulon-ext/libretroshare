@@ -41,9 +41,13 @@ class RsReputations ;
 class RsTurtle ;
 class RsGxsTunnelService ;
 class RsDht ;
-class RsMsgs ;
+class RsMail ;
+class RsChats ;
 class RsGxsForums;
 class RsGxsChannels;
+#ifdef RS_USE_CALENDAR
+class RsGxsCalendar;
+#endif
 class RsNotify;
 class RsServiceControl;
 class p3LinkMgr ;
@@ -111,11 +115,11 @@ class RsPlugInInterfaces {
 public:
     RsUtil::inited_ptr<RsPeers>  mPeers;
     RsUtil::inited_ptr<RsFiles>  mFiles;
-    RsUtil::inited_ptr<RsMsgs>   mMsgs;
+    RsUtil::inited_ptr<RsChats>  mChats;
+    RsUtil::inited_ptr<RsMail>   mMail;
     RsUtil::inited_ptr<RsTurtle> mTurtle;
     RsUtil::inited_ptr<RsDisc>   mDisc;
     RsUtil::inited_ptr<RsDht>    mDht;
-    RsUtil::inited_ptr<RsNotify> mNotify;
     RsUtil::inited_ptr<RsServiceControl> mServiceControl;
     RsUtil::inited_ptr<RsPluginHandler> mPluginHandler;
 
@@ -128,6 +132,9 @@ public:
     RsUtil::inited_ptr<PgpAuxUtils>     mPgpAuxUtils;
     RsUtil::inited_ptr<RsGxsForums>     mGxsForums;
     RsUtil::inited_ptr<RsGxsChannels>   mGxsChannels;
+#ifdef RS_USE_CALENDAR
+    RsUtil::inited_ptr<RsGxsCalendar>   mGxsCalendar;
+#endif
     RsUtil::inited_ptr<RsGxsTunnelService>    mGxsTunnels;
     RsUtil::inited_ptr<RsReputations>   mReputations;
     RsUtil::inited_ptr<RsPosted>        mPosted;

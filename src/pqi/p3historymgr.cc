@@ -26,6 +26,7 @@
 #include "rsitems/rsconfigitems.h"
 #include "retroshare/rsiface.h"
 #include "retroshare/rspeers.h"
+#include "retroshare/rschats.h"
 #include "rsitems/rsmsgitems.h"
 #include "rsserver/p3face.h"
 #include "util/rsstring.h"
@@ -94,7 +95,7 @@ void p3HistoryMgr::addMessage(const ChatMessage& cm)
 		else if(cm.chat_id.isDistantChatId()&& mDistantEnable == true)
 		{
 			DistantChatPeerInfo dcpinfo;
-			if (rsMsgs->getDistantChatStatus(cm.chat_id.toDistantChatId(), dcpinfo))
+            if (rsChats->getDistantChatStatus(cm.chat_id.toDistantChatId(), dcpinfo))
 			{
 				RsIdentityDetails det;
 				RsGxsId writer_id = cm.incoming?(dcpinfo.to_id):(dcpinfo.own_id);
@@ -164,8 +165,13 @@ void p3HistoryMgr::addMessage(const ChatMessage& cm)
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 	}
 
-	if (addMsgId) {
-		RsServer::notify()->notifyHistoryChanged(addMsgId, NOTIFY_TYPE_ADD);
+    if (addMsgId)
+    {
+        auto ev = std::make_shared<RsChatServiceEvent>();
+        ev->mEventCode = RsChatServiceEventCode::CHAT_HISTORY_CHANGED;
+        ev->mMsgHistoryId = addMsgId;
+        ev->mHistoryChangeType = RsChatHistoryChangeFlags::ADD;
+        rsEvents->postEvent(ev);
 	}
 }
 
@@ -552,7 +558,11 @@ void p3HistoryMgr::clear(const ChatId &chatId)
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
     }
 
-	RsServer::notify()->notifyHistoryChanged(0, NOTIFY_TYPE_MOD);
+    auto ev = std::make_shared<RsChatServiceEvent>();
+    ev->mEventCode = RsChatServiceEventCode::CHAT_HISTORY_CHANGED;
+    ev->mMsgHistoryId = 0;
+    ev->mHistoryChangeType = RsChatHistoryChangeFlags::MOD;
+    rsEvents->postEvent(ev);
 }
 
 void p3HistoryMgr::removeMessages(const std::list<uint32_t> &msgIds)
@@ -598,9 +608,15 @@ void p3HistoryMgr::removeMessages(const std::list<uint32_t> &msgIds)
 	{
         IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
 
-		for (iit = removedIds.begin(); iit != removedIds.end(); ++iit)
-			RsServer::notify()->notifyHistoryChanged(*iit, NOTIFY_TYPE_DEL);
-	}
+        for (iit = removedIds.begin(); iit != removedIds.end(); ++iit)
+        {
+            auto ev = std::make_shared<RsChatServiceEvent>();
+            ev->mEventCode = RsChatServiceEventCode::CHAT_HISTORY_CHANGED;
+            ev->mMsgHistoryId = *iit;
+            ev->mHistoryChangeType = RsChatHistoryChangeFlags::DEL;
+            rsEvents->postEvent(ev);
+        }
+    }
 }
 
 bool p3HistoryMgr::getEnable(uint32_t chat_type)

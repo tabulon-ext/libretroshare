@@ -4,7 +4,7 @@
  * libretroshare: retroshare core library                                      *
  *                                                                             *
  * Copyright (C) 2008-2012  Robert Fernie, Christopher Evi-Parker              *
- * Copyright (C) 2020  Gioacchino Mazzurco <gio@eigenlab.org>                  *
+ * Copyright (C) 2020  Gioacchino Mazzurco <gio@retroshare.cc>                  *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify        *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -138,12 +138,19 @@ struct RsGxsPostedEvent: RsEvent
 {
 	RsGxsPostedEvent():
 	    RsEvent(RsEventType::GXS_POSTED),
-	    mPostedEventCode(RsPostedEventCode::UNKNOWN) {}
+	    mPostedEventCode(RsPostedEventCode::UNKNOWN),
+	    mPostedMsgsRead(false) {}
 
 	RsPostedEventCode mPostedEventCode;
 	RsGxsGroupId mPostedGroupId;
 	RsGxsMessageId mPostedMsgId;
 	RsGxsMessageId mPostedThreadId;
+
+	/** For batched READ_STATUS_CHANGED events (e.g. "mark all as read"): the
+	 * messages affected and their new read state. Empty for single-message
+	 * events, which use mPostedMsgId as usual. */
+	std::vector<RsGxsMessageId> mPostedMsgIds;
+	bool mPostedMsgsRead;
 
 	///* @see RsEvent @see RsSerializable
 	void serial_process( RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx) override
@@ -153,6 +160,8 @@ struct RsGxsPostedEvent: RsEvent
 		RS_SERIAL_PROCESS(mPostedGroupId);
 		RS_SERIAL_PROCESS(mPostedMsgId);
 		RS_SERIAL_PROCESS(mPostedThreadId);
+		RS_SERIAL_PROCESS(mPostedMsgIds);
+		RS_SERIAL_PROCESS(mPostedMsgsRead);
 	}
 
 	~RsGxsPostedEvent() override;
@@ -231,6 +240,17 @@ public:
 	        std::vector<RsPostedPost>& posts,
 	        std::vector<RsGxsComment>& comments,
 	        std::vector<RsGxsVote>& votes ) = 0;
+
+	/**
+	 * @brief Get lightweight summaries for top-level posts in a board.
+	 * @jsonapi{development}
+	 * @param[in] boardId id of the board of which post summaries are requested
+	 * @param[out] summaries storage for post metadata, excluding comments and votes
+	 * @return false if something failed, true otherwise
+	 */
+	virtual bool getBoardPostSummaries(
+	        const RsGxsGroupId& boardId,
+	        std::vector<RsMsgMetaData>& summaries ) = 0;
 
 	/**
 	 * @brief Edit board details.
@@ -401,6 +421,22 @@ public:
      * @return false on error, true otherwise
      */
     virtual bool setPostReadStatus(const RsGxsGrpMsgIdPair& msgId, bool read) = 0;
+
+    /**
+     * @brief Mark several posts of a board read/unread in one batch. Blocking.
+     *
+     * Like setPostReadStatus() but queues all the status changes at once: they
+     * are persisted in a single database transaction and only one event is
+     * emitted, so it stays cheap even for thousands of posts and is meant to be
+     * called from a background thread so the GUI never blocks.
+     * @param[in] boardId board group identifier
+     * @param[in] msgIds  identifiers of the posts to update
+     * @param[in] read    true to mark as read, false to mark as unread
+     * @return false on error, true otherwise
+     */
+    virtual bool setPostReadStatus( const RsGxsGroupId& boardId,
+                                    const std::vector<RsGxsMessageId>& msgIds,
+                                    bool read ) = 0;
 
 	enum RS_DEPRECATED RankType {TopRankType, HotRankType, NewRankType };
 

@@ -344,7 +344,14 @@ int pqiperson::handleNotifyEvent_locked(NetInterface *ni, int newState,
 			inConnectAttempt = false;
 
 			// STARTUP THREAD
-			activepqi->start("pqi " + PeerId().toStdString().substr(0, 11));
+			// On a reconnection over the same interface, activepqi's streamer
+			// thread is still running: only start it when it isn't, otherwise
+			// RsThread::start() logs "attempt to start already running thread"
+			// plus a stack trace on every such reconnection. The already-running
+			// thread keeps serving the (switched-over) connection, so this is
+			// purely noise removal and does not change behaviour.
+			if(!activepqi->isRunning())
+				activepqi->start("pqi " + PeerId().toStdString().substr(0, 11));
 
 			// reset all other children (clear up long UDP attempt)
 			for(it = kids.begin(); it != kids.end(); ++it)
@@ -424,12 +431,25 @@ int pqiperson::fullstopthreads()
 			  << PeerId().toStdString() << std::endl;
 #endif
 
+	/* Snapshot the child connections under mPersonMtx, then release it BEFORE
+	 * joining their threads. A child's streamer thread may still be delivering a
+	 * received item that synchronously replies on the same stack through
+	 * pqiperson::SendItem(), which locks mPersonMtx; holding mPersonMtx across the
+	 * (blocking) fullstop() join would deadlock -- exactly the reason
+	 * pqipersongrp::fullstopAllThreads() already drops coreMtx before waiting.
+	 * Observed at shutdown as an endless RsThread::waitWhileStopping() on a
+	 * "pqi <peer>" thread that was answering an RTT ping. */
+	std::list<pqiconnect *> children;
+	{
+		RS_STACK_MUTEX(mPersonMtx);
+		for(std::map<uint32_t, pqiconnect *>::iterator it = kids.begin(); it != kids.end(); ++it)
+			children.push_back(it->second);
+	}
+
+	for(std::list<pqiconnect *>::iterator it = children.begin(); it != children.end(); ++it)
+		(*it)->fullstop(); // WAIT FOR THREAD TO STOP.
+
 	RS_STACK_MUTEX(mPersonMtx);
-
-	std::map<uint32_t, pqiconnect *>::iterator it;
-	for(it = kids.begin(); it != kids.end(); ++it)
-		(it->second)->fullstop(); // WAIT FOR THREAD TO STOP.
-
 	activepqi = NULL;
 	active = false;
 	lastHeartbeatReceived = 0;
@@ -559,16 +579,24 @@ int	pqiperson::connect(uint32_t type, const sockaddr_storage &raddr,
 	return 1;
 }
 
-
 void pqiperson::getRates(RsBwRates &rates)
 {
 	RS_STACK_MUTEX(mPersonMtx);
 
-	// get the rate from the active one.
+	/* Check if the peer connection is established and active */
 	if ((!active) || (activepqi == NULL))
+	{
 		return;
+	}
 
+	/* Forward the request to the active streamer (pqiconnect) */
 	activepqi->getRates(rates);
+
+	/* Clean debug message for the relay layer */
+	//RsDbg() << "OUTQUEUEBYTES [Person] Peer: " << PeerId() << " | Relaying rate request";
+
+	/* Debug to confirm the relay layer receives cumulative totals */
+	//RsDbg() << "BWSUM Relay [Person] Peer: " << PeerId() << " | In: " << rates.mTotalIn << " | Out: " << rates.mTotalOut;
 }
 
 int pqiperson::gatherStatistics(std::list<RSTrafficClue>& out_lst,
